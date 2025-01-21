@@ -1,6 +1,7 @@
 [project]
 name = "grainsegmentation"
 description = "Add your description here"
+version = "0.0.0"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,6 +19,9 @@ allow_zero_version = true
 no_git_verify = false
 tag_format = "v{version}"
 version_variables = ["src/version.py:__version__"]
+version_toml = [
+    "pyproject.toml:project.version",
+]
 
 [tool.semantic_release.branches.main]
 match = "(main|master)"
