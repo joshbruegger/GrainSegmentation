@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [build-system]
-requires = ["hatchling", "python-semantic-release"]
+requires = ["hatchling", "python-semantic-release", "build"]
 build-backend = "hatchling.build"
 
 [tool.semantic_release]
