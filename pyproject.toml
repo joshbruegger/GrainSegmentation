@@ -1,0 +1,22 @@
+[project]
+name = "grainsegmentation"
+version = "0.0.0"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling", "python-semantic-release"]
+build-backend = "hatchling.build"
+
+[tool.semantic_release]
+version_variable = [
+    "pyproject.toml:version",
+]
+branch = "main"
+changelog_file = "CHANGELOG.md"
+build_command = "python -m build"
+dist_path = "dist/"
+upload_to_pypi = false
+upload_to_release = true
+commit_message = "chore(release): {version} [skip ci]"
