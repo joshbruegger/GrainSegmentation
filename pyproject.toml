@@ -5,7 +5,11 @@ version = "0.0.1"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "aicsimageio>=4.14.0",
+    "gdown>=5.2.0",
     "python-semantic-release>=9.16.1",
+    "ruff>=0.9.3",
+    "tenacity>=9.0.0",
 ]
 
 [tool.semantic_release]
