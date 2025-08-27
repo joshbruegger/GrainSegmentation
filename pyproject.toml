@@ -6,10 +6,20 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aicsimageio>=4.14.0",
+    "aicspylibczi>=3.3.1",
+    "bioio>=1.6.1",
+    "bioio-czi>=2.0.0",
+    "cleanlab>=2.6.5",
+    "cvat-sdk>=2.38.0",
     "gdown>=5.2.0",
+    "numpy>=2.2.2",
+    "pillow>=11.1.0",
     "python-semantic-release>=9.16.1",
     "ruff>=0.9.3",
     "tenacity>=9.0.0",
+    "tifffile>=2023.2.28",
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
 ]
 
 [tool.semantic_release]
@@ -77,4 +87,9 @@ insecure = false
 [tool.semantic_release.publish]
 dist_glob_patterns = ["dist/*"]
 upload_to_vcs_release = true
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.3",
+]
 
