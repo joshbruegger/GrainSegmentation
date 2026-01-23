@@ -9,7 +9,9 @@ Options:
   -o, --output-folder FOLDER   Output directory (default: shown)
   -t, --tile-size W H          Tile size, width and height (default: shown)
   -c, --compression TYPE       TIFF compression (default: shown)
-  -r, --roi-file FILE          Optional text file: "filename x1 y1 x2 y2" per line
+  -r, --roi-file FILE          Optional text file: filename and 4 coords per line.
+                                Quote filenames with spaces, e.g.:
+                                "My Image #1.czi" 100 200 300 400
 
 If INPUT_FOLDER is omitted, the current working directory is used.
 
@@ -25,8 +27,11 @@ from __future__ import annotations
 import sys
 import re
 import argparse
+import shlex
 from pathlib import Path
 from typing import Iterable, Tuple
+import time
+import gc
 
 
 def _import_backend_aics():
@@ -50,6 +55,64 @@ def _find_czi_files(input_dir: Path) -> Iterable[Path]:
     )
 
 
+def _filter_files(files: list[Path], only_regex: str | None) -> list[Path]:
+    if not only_regex:
+        return files
+    pattern = re.compile(only_regex)
+    filtered: list[Path] = []
+    for path in files:
+        name = path.name
+        stem = path.stem
+        if pattern.search(name) or pattern.search(stem):
+            filtered.append(path)
+    return filtered
+
+
+def _parse_channels_arg(
+    channels_arg: str | None, channel_names: list[str]
+) -> list[int] | None:
+    """Return list of channel indices to keep, or None to keep all.
+
+    channels_arg accepts comma-separated values that can be integer indices or names.
+    Names can match either raw names or sanitized names (case-insensitive).
+    """
+    if not channels_arg:
+        return None
+    # Build lookup maps
+    name_to_idx: dict[str, int] = {}
+    for idx, name in enumerate(channel_names):
+        name_to_idx[name.lower()] = idx
+        name_to_idx[_sanitize_filename_component(str(name)).lower()] = idx
+        name_to_idx[f"c{idx}".lower()] = idx
+        name_to_idx[str(idx)] = idx
+
+    selected: list[int] = []
+    for raw in channels_arg.split(","):
+        key = raw.strip().lower()
+        if not key:
+            continue
+        if key in name_to_idx:
+            selected.append(name_to_idx[key])
+            continue
+        # Try integer index
+        try:
+            idx = int(key)
+            if 0 <= idx < len(channel_names):
+                selected.append(idx)
+                continue
+        except Exception:
+            pass
+        raise RuntimeError(f"Unknown channel selector: '{raw}'. Known: {channel_names}")
+    # Deduplicate preserving order
+    seen: set[int] = set()
+    unique = []
+    for i in selected:
+        if i not in seen:
+            seen.add(i)
+            unique.append(i)
+    return unique
+
+
 def _sanitize_filename_component(text: str) -> str:
     """Return a filesystem-safe component derived from text."""
     text = text.strip()
@@ -68,7 +131,10 @@ def _parse_roi_file(roi_file: Path) -> dict[str, list[tuple[int, int, int, int]]
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            parts = line.split()
+            lexer = shlex.shlex(line, posix=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            parts = list(lexer)
             if len(parts) != 5:
                 print(
                     f"[warn] ROI line {line_no} malformed (need 5 fields): {raw.rstrip()}"
@@ -119,7 +185,11 @@ def _resolve_output_dir(input_dir: Path, output_folder: str) -> Path:
 
 
 def _save_tiled_tiff(
-    image_2d, out_path: Path, tile_size: Tuple[int, int], compression: str | None
+    image_2d,
+    out_path: Path,
+    tile_size: Tuple[int, int],
+    compression: str | None,
+    compress_level: int | None = None,
 ):
     # Lazy import to avoid hard dependency errors on listing help
     try:
@@ -132,7 +202,14 @@ def _save_tiled_tiff(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Use BigTIFF to be safe for large images
-    tiff.imwrite(
+    # tifffile can accept NumPy arrays and may also accept Dask arrays.
+    # If a Dask array is provided, tifffile will compute as needed.
+    compressionargs = None
+    if compression and compress_level is not None:
+        algo = str(compression).lower()
+        if algo in {"deflate", "zlib", "zstd", "zstandard"}:
+            compressionargs = {"level": int(compress_level)}
+    kwargs = dict(
         file=str(out_path),
         data=image_2d,
         tile=tile_size,
@@ -140,6 +217,35 @@ def _save_tiled_tiff(
         bigtiff=True,
         metadata=None,
     )
+    if compressionargs is not None:
+        kwargs["compressionargs"] = compressionargs
+    tiff.imwrite(**kwargs)
+
+
+def _rechunk_to_tiles_if_lazy(image_2d, tile_size: Tuple[int, int]):
+    """If image_2d is a Dask array, rechunk to roughly tile-sized blocks.
+
+    Expects tile_size as (width, height). Image is YX, so chunk as (height, width).
+    """
+    try:
+        # Detect dask array via attribute; avoid hard import unless needed
+        if hasattr(image_2d, "rechunk") and hasattr(image_2d, "chunks"):
+            tile_w = int(tile_size[0])
+            tile_h = int(tile_size[1])
+            # image_2d is YX
+            height = int(image_2d.shape[-2])
+            width = int(image_2d.shape[-1])
+            new_chunks = (
+                max(1, min(tile_h, height)),
+                max(1, min(tile_w, width)),
+            )
+            try:
+                return image_2d.rechunk(new_chunks)
+            except Exception:
+                return image_2d
+        return image_2d
+    except Exception:
+        return image_2d
 
 
 def convert_folder(
@@ -148,10 +254,16 @@ def convert_folder(
     tile_size: Tuple[int, int],
     compression: str | None,
     roi_map: dict[str, list[tuple[int, int, int, int]]] | None,
+    verbose: bool = False,
+    lazy: bool = False,
+    only_regex: str | None = None,
+    channels: str | None = None,
+    skip_existing: bool = False,
 ) -> None:
     aicsimage_cls = _import_backend_aics()
 
     czi_files = list(_find_czi_files(input_folder))
+    czi_files = _filter_files(czi_files, only_regex)
     if not czi_files:
         print(f"[info] No .czi files found in: {input_folder}")
         return
@@ -166,9 +278,24 @@ def convert_folder(
 
     for src in czi_files:
         try:
+            t0 = time.perf_counter()
+            if verbose:
+                try:
+                    size_bytes = src.stat().st_size
+                except Exception:
+                    size_bytes = -1
+                print(f"[start] {src.name} (size={size_bytes} bytes)")
             img = aicsimage_cls(str(src))
             # Extract channels as CYX for first scene/time/z
-            cyx = img.get_image_data("CYX", S=0, T=0, Z=0)
+            if lazy:
+                try:
+                    cyx = img.get_image_dask_data("CYX", S=0, T=0, Z=0)
+                except Exception as e:
+                    raise RuntimeError(
+                        "Lazy mode requires Dask. Install: pip install 'dask[array]' 'aicspylibczi' 'tifffile>=2023.2.3' (optionally 'zarr' 'numcodecs')"
+                    ) from e
+            else:
+                cyx = img.get_image_data("CYX", S=0, T=0, Z=0)
             if cyx.ndim != 3:
                 raise RuntimeError(
                     f"Unexpected data shape for {src.name}; expected CYX with 3 dims, got {cyx.shape}"
@@ -183,19 +310,49 @@ def convert_folder(
             except Exception:
                 channel_names = [f"C{idx}" for idx in range(num_channels)]
 
+            selected_channel_indices = _parse_channels_arg(channels, channel_names)
+            if selected_channel_indices is None:
+                selected_channel_indices = list(range(num_channels))
+
+            if verbose:
+                try:
+                    dtype_name = str(cyx.dtype)
+                except Exception:
+                    dtype_name = "unknown"
+                print(
+                    f"[info] {src.name}: shape={tuple(cyx.shape)} dtype={dtype_name} channels={channel_names}"
+                )
+
             # Per-image output subfolder
             per_image_dir = output_dir / src.stem
             per_image_dir.mkdir(parents=True, exist_ok=True)
 
             rois = _lookup_rois(roi_map, src)
+            if verbose:
+                print(f"[info] {src.name}: roi_count={len(rois) if rois else 0}")
             if not rois:
-                for c_idx in range(num_channels):
+                for c_idx in selected_channel_indices:
                     channel_label = _sanitize_filename_component(
                         str(channel_names[c_idx])
                     )
                     dst = per_image_dir / f"{src.stem}_{channel_label}.tif"
                     image_2d = cyx[c_idx]
-                    _save_tiled_tiff(image_2d, dst, tile_size, compression)
+                    if lazy:
+                        image_2d = _rechunk_to_tiles_if_lazy(image_2d, tile_size)
+                    if skip_existing and dst.exists():
+                        if verbose:
+                            print(f"[skip] exists -> {dst.relative_to(output_dir)}")
+                        print(f"[ok] {src.name} -> {dst.relative_to(output_dir)}")
+                        continue
+                    if verbose:
+                        print(f"[write] {src.name} -> {dst.relative_to(output_dir)}")
+                    _save_tiled_tiff(
+                        image_2d,
+                        dst,
+                        tile_size,
+                        compression,
+                        getattr(args, "compress_level", None) if False else None,
+                    )
                     print(f"[ok] {src.name} -> {dst.relative_to(output_dir)}")
             else:
                 height = int(cyx.shape[1])
@@ -211,7 +368,7 @@ def convert_folder(
                         )
                         continue
                     roi_suffix = f"x{xx1}_y{yy1}_x{xx2}_y{yy2}"
-                    for c_idx in range(num_channels):
+                    for c_idx in selected_channel_indices:
                         channel_label = _sanitize_filename_component(
                             str(channel_names[c_idx])
                         )
@@ -220,12 +377,50 @@ def convert_folder(
                             / f"{src.stem}_{channel_label}_{roi_suffix}.tif"
                         )
                         image_2d = cyx[c_idx, yy1:yy2, xx1:xx2]
-                        _save_tiled_tiff(image_2d, dst, tile_size, compression)
+                        if lazy:
+                            image_2d = _rechunk_to_tiles_if_lazy(image_2d, tile_size)
+                        if skip_existing and dst.exists():
+                            if verbose:
+                                print(f"[skip] exists -> {dst.relative_to(output_dir)}")
+                            print(
+                                f"[ok] {src.name} [{roi_suffix}] -> {dst.relative_to(output_dir)}"
+                            )
+                            continue
+                        if verbose:
+                            print(
+                                f"[write] {src.name} [{roi_suffix}] -> {dst.relative_to(output_dir)}"
+                            )
+                        _save_tiled_tiff(
+                            image_2d,
+                            dst,
+                            tile_size,
+                            compression,
+                            getattr(args, "compress_level", None) if False else None,
+                        )
                         print(
                             f"[ok] {src.name} [{roi_suffix}] -> {dst.relative_to(output_dir)}"
                         )
+            if verbose:
+                elapsed = time.perf_counter() - t0
+                print(f"[done] {src.name} in {elapsed:.1f}s")
         except Exception as e:
             print(f"[fail] {src.name}: {e}")
+        finally:
+            # Attempt to free resources between files
+            try:
+                if "img" in locals() and hasattr(img, "close"):
+                    img.close()
+            except Exception:
+                pass
+            try:
+                del img
+            except Exception:
+                pass
+            try:
+                del cyx
+            except Exception:
+                pass
+            gc.collect()
 
 
 def _parse_args(argv: list[str]):
@@ -264,7 +459,37 @@ def _parse_args(argv: list[str]):
         "-r",
         "--roi-file",
         default=None,
-        help="Text file with lines: 'filename x1 y1 x2 y2' (x2/y2 exclusive)",
+        help=(
+            "Text file with lines: filename x1 y1 x2 y2 (x2/y2 exclusive). "
+            'Quote filenames with spaces, e.g. "My Image #1.czi" 100 200 300 400'
+        ),
+    )
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="Regex to filter input CZI filenames (matches name or stem)",
+    )
+    parser.add_argument(
+        "--channels",
+        default=None,
+        help="Comma-separated channel selectors (indices or names)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print detailed progress for each file/channel/ROI",
+    )
+    parser.add_argument(
+        "-L",
+        "--lazy",
+        action="store_true",
+        help="Use lazy Dask-backed reads to reduce peak memory usage",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip writing outputs that already exist",
     )
     return parser.parse_args(argv)
 
@@ -293,11 +518,16 @@ def main(argv: list[str]) -> int:
                 return 2
             roi_map = _parse_roi_file(roi_path)
         convert_folder(
-            input_dir=input_dir,
+            input_folder=input_dir,
             output_folder=str(args.output_folder),
             tile_size=tile_size,
             compression=compression,
             roi_map=roi_map,
+            verbose=bool(getattr(args, "verbose", False)),
+            lazy=bool(getattr(args, "lazy", False)),
+            only_regex=getattr(args, "only", None),
+            channels=getattr(args, "channels", None),
+            skip_existing=bool(getattr(args, "skip_existing", False)),
         )
     except RuntimeError as e:
         print(f"[error] {e}")

@@ -3,23 +3,20 @@ name = "grainsegmentation"
 description = "Add your description here"
 version = "0.1.0"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.13.1"
 dependencies = [
-    "aicsimageio>=4.14.0",
-    "aicspylibczi>=3.3.1",
-    "bioio>=1.6.1",
-    "bioio-czi>=2.0.0",
-    "cleanlab>=2.6.5",
-    "cvat-sdk>=2.38.0",
+    "ruff>=0.14.6",
+    "python-semantic-release>=10.5.2",
     "gdown>=5.2.0",
-    "numpy>=2.2.2",
-    "pillow>=11.1.0",
-    "python-semantic-release>=9.16.1",
-    "ruff>=0.9.3",
-    "tenacity>=9.0.0",
-    "tifffile>=2023.2.28",
-    "torch>=2.7.0",
-    "torchvision>=0.22.0",
+    "matplotlib>=3.10.7",
+    "sam-2",
+    "torch>=2.9.1",
+    "torchvision>=0.24.1",
+    "opencv-python>=4.12.0.88",
+    "large-image>=1.33.5",
+    "large-image-source-tiff>=1.33.5",
+    "large-image-source-tifffile>=1.33.5",
+    "tqdm>=4.67.1",
 ]
 
 [tool.semantic_release]
@@ -92,4 +89,7 @@ upload_to_vcs_release = true
 dev = [
     "ruff>=0.9.3",
 ]
+
+[tool.uv.sources]
+sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 

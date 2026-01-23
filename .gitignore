@@ -1,2 +1,7 @@
 *.czi
 notes.md
+.venv/
+.github/
+.vscode/
+logs/
+.cursor/
