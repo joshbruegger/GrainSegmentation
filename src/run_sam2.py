@@ -407,6 +407,11 @@ def main():
         default=0.5,
         help="IoU threshold for NMS. Default: 0.5",
     )
+    parser.add_argument(
+        "--no-nms",
+        action="store_true",
+        help="Disable NMS post-processing.",
+    )
     args = parser.parse_args()
 
     if args.checkpoint == DEFAULT_SAM2_CHECKPOINT and not os.path.exists(
@@ -423,7 +428,7 @@ def main():
     mask_generator = SAM2AutomaticMaskGenerator(
         model=sam2,
         points_per_side=64,
-        points_per_batch=128,
+        points_per_batch=32,
         pred_iou_thresh=0.7,
     )
 
@@ -435,6 +440,8 @@ def main():
     print(f"Found {len(images)} image(s). Writing outputs to: {args.output}")
     os.makedirs(args.output, exist_ok=True)
 
+    nms_thresh = None if args.no_nms else args.nms_thresh
+
     for idx, img_path in enumerate(images, 1):
         try:
             print(f"[{idx}/{len(images)}] Processing: {img_path}")
@@ -445,7 +452,7 @@ def main():
                 tile_size=args.tile_size,
                 tile_overlap=args.tile_overlap,
                 visualize_probability=args.visualize_probability,
-                nms_thresh=args.nms_thresh,
+                nms_thresh=nms_thresh,
             )
         except Exception as e:
             print(f"Failed to process {img_path}: {e}")
