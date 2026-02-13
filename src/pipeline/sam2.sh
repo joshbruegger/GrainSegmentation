@@ -3,7 +3,7 @@
 #SBATCH --output=logs/sam2-%j.log
 #SBATCH --mem=60G
 #SBATCH --gpus-per-node=a100:1
-#SBATCH --time=03:40:00
+#SBATCH --time=04:00:00
 
 echo "Loading modules..."
 module purge
@@ -21,12 +21,41 @@ fi
 
 uv sync
 
+INPUT_PATH="${1:-$SCRATCH/GrainSeg/dataset/MWD-1#121_s0c0.tif}"
+INPUT_NAME="$(basename "$INPUT_PATH")"
+INPUT_STEM="${INPUT_NAME%.*}"
+
 uv run python -u src/run_sam2.py \
-    --input "$SCRATCH/GrainSeg/dataset/MWD-1#121_s0c0.tif" \
+    --input "$INPUT_PATH" \
     --output "$SCRATCH/GrainSeg/out" \
     --tile-size 6144 \
     --visualize-probability 0 \
-    --no-nms
+    --nms-thresh 0.3 \
+    --max-mask-coverage 0.5 \
+    --load-mask-cache
+    # --save-mask-cache
+
+
+    # --merge-overlap \
+    # --load-mask-cache \
+    # --merge-iom-thresh 0.5
+
+
+
+
+    # --nms-thresh 0.7
+
+    # --no-nms \
+    # --merge-overlap \
+    # --merge-min-overlap 30
+
+    # --no-nms \
+    # --merge-overlap \
+    # --merge-min-overlap 0
+
+uv run python -u src/convert_rle_polygon.py rle2json \
+    -i "$SCRATCH/GrainSeg/out/${INPUT_STEM}.json" \
+    -o "$SCRATCH/GrainSeg/out/${INPUT_STEM}.geojson"
 
 # uv run python -u src/visualize_rle.py -i "$SCRATCH/GrainSeg/dataset/tiff/MWD-1#121/MWD-1 #121_s0c0x730-58842y2513-53028_ORG.tif" \
 #     -r "$SCRATCH/GrainSeg/out/MWD-1 #121_s0c0x730-58842y2513-53028_ORG_rle.json" \

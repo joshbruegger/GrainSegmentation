@@ -2,19 +2,20 @@ import traceback
 import os
 import atexit
 import urllib.request
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from PIL import Image
 import argparse
 import json
+import pickle
 import cv2
 import large_image
 from pathlib import Path
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-from torchvision.ops.boxes import batched_nms
 from tqdm import tqdm
 
 # Handle very large images
@@ -131,6 +132,250 @@ def encode_rle(mask: np.ndarray) -> dict:
     return {"size": [int(h), int(w)], "counts": [int(x) for x in counts], "order": "C"}
 
 
+def decode_rle(rle_dict: Dict[str, Any]) -> np.ndarray:
+    """
+    Decodes a dictionary containing RLE encoded mask.
+    Expected format: { "size": [H, W], "counts": [c1, c2, ...], "order": "C" }
+    """
+    if "size" not in rle_dict or "counts" not in rle_dict:
+        raise ValueError("Invalid RLE dictionary: missing size or counts")
+
+    h, w = rle_dict["size"]
+    counts = rle_dict["counts"]
+
+    # Heuristic to fix double-zero bug from run_sam2.py
+    if len(counts) >= 2 and counts[0] == 0 and counts[1] == 0:
+        counts = counts[1:]
+
+    mask = np.zeros(h * w, dtype=np.uint8)
+    current_idx = 0
+    val = 0
+    for count in counts:
+        if val:
+            mask[current_idx : current_idx + count] = 1
+        current_idx += count
+        val = 1 - val
+
+    return mask.reshape((h, w)).astype(bool)
+
+
+def _mask_bbox(mask: np.ndarray) -> Tuple[int, int, int, int] | None:
+    ys, xs = np.where(mask)
+    if ys.size == 0:
+        return None
+    y0 = int(ys.min())
+    y1 = int(ys.max())
+    x0 = int(xs.min())
+    x1 = int(xs.max())
+    return x0, y0, x1, y1
+
+
+@dataclass
+class MergeEntry:
+    ann: Dict[str, Any]
+    mask: np.ndarray
+    bbox: Tuple[int, int, int, int]
+    area: int
+    source_ids: List[int]
+
+
+def _build_merge_entries(masks: List[dict]) -> List[MergeEntry]:
+    entries: List[MergeEntry] = []
+    for idx, ann in enumerate(masks):
+        rle = ann.get("rle")
+        if not rle:
+            continue
+
+        mask = decode_rle(rle)
+        if not mask.any():
+            continue
+
+        tile_x = int(ann.get("tile_x", 0))
+        tile_y = int(ann.get("tile_y", 0))
+        bbox = ann.get("bbox")
+
+        crop = None
+        if bbox is not None and len(bbox) == 4:
+            x0, y0, w, h = (int(v) for v in bbox)
+            if w > 0 and h > 0:
+                lx0 = x0 - tile_x
+                ly0 = y0 - tile_y
+                lx1 = lx0 + w - 1
+                ly1 = ly0 + h - 1
+                if 0 <= lx0 <= lx1 < mask.shape[1] and 0 <= ly0 <= ly1 < mask.shape[0]:
+                    crop = mask[ly0 : ly1 + 1, lx0 : lx1 + 1].copy()
+                    if crop.any():
+                        area = int(crop.sum())
+                        entries.append(
+                            MergeEntry(
+                                ann=ann,
+                                mask=crop,
+                                bbox=(x0, y0, x0 + w - 1, y0 + h - 1),
+                                area=area,
+                                source_ids=[idx],
+                            )
+                        )
+                        continue
+
+        bbox_local = _mask_bbox(mask)
+        if bbox_local is None:
+            continue
+        lx0, ly0, lx1, ly1 = bbox_local
+        crop = mask[ly0 : ly1 + 1, lx0 : lx1 + 1].copy()
+        area = int(crop.sum())
+        gx0 = tile_x + lx0
+        gy0 = tile_y + ly0
+        gx1 = tile_x + lx1
+        gy1 = tile_y + ly1
+        entries.append(
+            MergeEntry(
+                ann=ann,
+                mask=crop,
+                bbox=(gx0, gy0, gx1, gy1),
+                area=area,
+                source_ids=[idx],
+            )
+        )
+
+    return entries
+
+
+def _overlap_pixels(a: MergeEntry, b: MergeEntry, min_overlap: int) -> int:
+    ax0, ay0, ax1, ay1 = a.bbox
+    bx0, by0, bx1, by1 = b.bbox
+    ox0 = max(ax0, bx0)
+    oy0 = max(ay0, by0)
+    ox1 = min(ax1, bx1)
+    oy1 = min(ay1, by1)
+    if ox0 > ox1 or oy0 > oy1:
+        return 0
+    h = oy1 - oy0 + 1
+    w = ox1 - ox0 + 1
+    if h * w < min_overlap:
+        return 0
+    a_x0 = ox0 - ax0
+    a_y0 = oy0 - ay0
+    b_x0 = ox0 - bx0
+    b_y0 = oy0 - by0
+    a_sub = a.mask[a_y0 : a_y0 + h, a_x0 : a_x0 + w]
+    b_sub = b.mask[b_y0 : b_y0 + h, b_x0 : b_x0 + w]
+    return int(np.logical_and(a_sub, b_sub).sum())
+
+
+def merge_overlapping_masks(
+    masks: List[dict],
+    min_overlap: int,
+    min_iom: float,
+    verbose: bool = True,
+) -> List[dict]:
+    if min_overlap < 1:
+        raise ValueError("min_overlap must be >= 1 to represent pixel overlap")
+    if not (0.0 <= min_iom <= 1.0):
+        raise ValueError("min_iom must be within [0, 1].")
+    entries = _build_merge_entries(masks)
+    n = len(entries)
+    if n == 0:
+        return []
+
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx = find(x)
+        ry = find(y)
+        if rx != ry:
+            parent[ry] = rx
+
+    merge_pairs = 0
+    iterator = tqdm(range(n), desc="Overlap merge", mininterval=60, miniters=1)
+    for i in iterator:
+        a = entries[i]
+        for j in range(i + 1, n):
+            b = entries[j]
+            overlap = _overlap_pixels(a, b, min_overlap)
+            if overlap >= min_overlap:
+                should_merge = False
+                if min_iom <= 0.0:
+                    should_merge = True
+                else:
+                    min_area = min(a.area, b.area)
+                    if min_area > 0:
+                        iom = overlap / min_area
+                        should_merge = iom >= min_iom
+                if should_merge and find(i) != find(j):
+                    union(i, j)
+                    merge_pairs += 1
+
+    groups: Dict[int, List[MergeEntry]] = {}
+    for idx, entry in enumerate(entries):
+        root = find(idx)
+        groups.setdefault(root, []).append(entry)
+
+    merged_masks: List[dict] = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged_masks.append(group[0].ann)
+            continue
+
+        gx0 = min(e.bbox[0] for e in group)
+        gy0 = min(e.bbox[1] for e in group)
+        gx1 = max(e.bbox[2] for e in group)
+        gy1 = max(e.bbox[3] for e in group)
+        h = gy1 - gy0 + 1
+        w = gx1 - gx0 + 1
+        union_mask = np.zeros((h, w), dtype=bool)
+
+        merged_ids: List[int] = []
+        for entry in group:
+            merged_ids.extend(entry.source_ids)
+            ex0, ey0, ex1, ey1 = entry.bbox
+            y0 = ey0 - gy0
+            x0 = ex0 - gx0
+            union_mask[
+                y0 : y0 + entry.mask.shape[0], x0 : x0 + entry.mask.shape[1]
+            ] |= entry.mask
+
+        bbox = _mask_bbox(union_mask)
+        if bbox is None:
+            continue
+        lx0, ly0, lx1, ly1 = bbox
+        if (
+            lx0 > 0
+            or ly0 > 0
+            or lx1 < union_mask.shape[1] - 1
+            or ly1 < union_mask.shape[0] - 1
+        ):
+            union_mask = union_mask[ly0 : ly1 + 1, lx0 : lx1 + 1]
+            gx0 += lx0
+            gy0 += ly0
+
+        base = dict(group[0].ann)
+        base["tile_x"] = int(gx0)
+        base["tile_y"] = int(gy0)
+        base["rle"] = encode_rle(union_mask.astype(np.uint8))
+        base["bbox"] = [
+            int(gx0),
+            int(gy0),
+            int(union_mask.shape[1]),
+            int(union_mask.shape[0]),
+        ]
+        base["area"] = int(union_mask.sum())
+        base["merged_ids"] = sorted(set(int(x) for x in merged_ids))
+        merged_masks.append(base)
+
+    if verbose:
+        merged_groups = sum(1 for g in groups.values() if len(g) > 1)
+        print(f"Overlap groups formed: {len(groups)} (merged {merge_pairs} pairs)")
+        print(f"Merged masks created: {merged_groups}")
+
+    return merged_masks
+
+
 def masks_to_rle(masks: List[dict]) -> List[dict]:
     rles: List[dict] = []
     for ann in masks:
@@ -163,45 +408,115 @@ def masks_to_rle(masks: List[dict]) -> List[dict]:
     return rles
 
 
+def _mask_iou(a: MergeEntry, b: MergeEntry) -> float:
+    ax0, ay0, ax1, ay1 = a.bbox
+    bx0, by0, bx1, by1 = b.bbox
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    if ix0 > ix1 or iy0 > iy1:
+        return 0.0
+
+    a_x0 = ix0 - ax0
+    a_y0 = iy0 - ay0
+    a_x1 = ix1 - ax0
+    a_y1 = iy1 - ay0
+    b_x0 = ix0 - bx0
+    b_y0 = iy0 - by0
+    b_x1 = ix1 - bx0
+    b_y1 = iy1 - by0
+
+    a_slice = a.mask[a_y0 : a_y1 + 1, a_x0 : a_x1 + 1]
+    b_slice = b.mask[b_y0 : b_y1 + 1, b_x0 : b_x1 + 1]
+    if a_slice.size == 0 or b_slice.size == 0:
+        return 0.0
+
+    if a_slice.shape != b_slice.shape:
+        h = min(a_slice.shape[0], b_slice.shape[0])
+        w = min(a_slice.shape[1], b_slice.shape[1])
+        if h == 0 or w == 0:
+            return 0.0
+        a_slice = a_slice[:h, :w]
+        b_slice = b_slice[:h, :w]
+
+    inter = int(np.logical_and(a_slice, b_slice).sum())
+    if inter == 0:
+        return 0.0
+
+    union = a.area + b.area - inter
+    if union <= 0:
+        return 0.0
+    return float(inter) / float(union)
+
+
 def apply_nms(masks: List[dict], iou_threshold: float = 0.5) -> List[dict]:
     if len(masks) == 0:
         return []
 
-    # Extract boxes and scores
-    boxes = []
-    scores = []
-    for mask in masks:
-        # bbox is [x, y, w, h], convert to [x1, y1, x2, y2]
-        x, y, w, h = mask["bbox"]
-        boxes.append([x, y, x + w, y + h])
-        scores.append(mask["predicted_iou"])
+    entries = _build_merge_entries(masks)
+    entry_by_idx = {entry.source_ids[0]: entry for entry in entries}
+    scores = np.array(
+        [float(mask.get("predicted_iou", 0.0)) for mask in masks], dtype=np.float32
+    )
+    order = scores.argsort()[::-1].tolist()
+    keep_indices: List[int] = []
 
-    boxes = torch.tensor(boxes, dtype=torch.float32)
-    scores = torch.tensor(scores, dtype=torch.float32)
-    # Assume all masks are the same category (0)
-    idxs = torch.zeros(len(masks), dtype=torch.int64)
+    while order:
+        i = order[0]
+        keep_indices.append(i)
+        entry_i = entry_by_idx.get(i)
+        if entry_i is None:
+            order = order[1:]
+            continue
 
-    if torch.cuda.is_available():
-        boxes = boxes.cuda()
-        scores = scores.cuda()
-        idxs = idxs.cuda()
-
-    keep_indices = batched_nms(boxes, scores, idxs, iou_threshold)
-
-    if keep_indices.is_cuda:
-        keep_indices = keep_indices.cpu()
+        remaining: List[int] = []
+        for j in order[1:]:
+            entry_j = entry_by_idx.get(j)
+            if entry_j is None:
+                remaining.append(j)
+                continue
+            if _mask_iou(entry_i, entry_j) <= iou_threshold:
+                remaining.append(j)
+        order = remaining
 
     return [masks[i] for i in keep_indices]
+
+
+def filter_large_masks(
+    masks: List[dict], tile_area: int, max_coverage: float
+) -> List[dict]:
+    if tile_area <= 0:
+        return masks
+    keep: List[dict] = []
+    for mask in masks:
+        area = mask.get("area")
+        if area is None:
+            seg = mask.get("segmentation")
+            if isinstance(seg, np.ndarray):
+                area = int(seg.sum())
+            else:
+                area = 0
+        if (area / float(tile_area)) < max_coverage:
+            keep.append(mask)
+    return keep
 
 
 def segment_image(
     image_path: str,
     output_dir: str,
-    mask_generator: SAM2AutomaticMaskGenerator,
+    mask_generator: Optional[SAM2AutomaticMaskGenerator],
     tile_size: Optional[int] = None,
     tile_overlap: Optional[int] = None,
     visualize_probability: float = 0.1,
     nms_thresh: Optional[float] = None,
+    merge_overlaps: bool = False,
+    merge_min_overlap: int = 1,
+    merge_iom_thresh: float = 0.0,
+    max_mask_coverage: Optional[float] = None,
+    save_mask_cache: bool = False,
+    load_mask_cache: bool = False,
+    mask_cache_dir: Optional[str] = None,
 ):
     print(f"Segmenting image: {image_path}")
     img = large_image.open(image_path)
@@ -220,49 +535,88 @@ def segment_image(
     file_name = os.path.splitext(file_name)[0]
     os.makedirs(output_dir, exist_ok=True)
 
-    masks = []
+    cache_dir = mask_cache_dir or output_dir
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{file_name}.raw_masks.pkl")
 
-    # Auto-calculate overlap if not specified
-    current_overlap = tile_overlap
-    if tile_overlap is None and tile_size is not None:
-        current_overlap = int(tile_size * 0.25)
-        print(
-            f"Auto-selected tile overlap: {current_overlap} pixels (25% of {tile_size})"
-        )
+    if load_mask_cache:
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(f"Mask cache not found: {cache_path}")
+        print(f"Loading mask cache: {cache_path}")
+        with open(cache_path, "rb") as f:
+            all_masks = pickle.load(f)
+    else:
+        if mask_generator is None:
+            raise ValueError("mask_generator is required when not loading cache.")
+        masks = []
 
-    all_masks = []
+        # Auto-calculate overlap if not specified
+        current_overlap = tile_overlap
+        if tile_overlap is None and tile_size is not None:
+            current_overlap = int(tile_size * 0.25)
+            print(
+                f"Auto-selected tile overlap: {current_overlap} pixels (25% of {tile_size})"
+            )
 
-    for tile in (
-        pbar := tqdm(
-            img.tileIterator(
-                tile_size=dict(width=tile_size, height=tile_size),
-                tile_overlap=dict(x=current_overlap, y=current_overlap, edges=False),
-                format=large_image.constants.TILE_FORMAT_NUMPY,
-            ),
-            mininterval=60,
-            miniters=1,
-        )
-    ):
-        # generate masks for tile
-        with torch.inference_mode():
-            masks = mask_generator.generate(tile["tile"])
+        all_masks = []
 
-        # current = tile["tile_position"]["position"] + 1
-        # total = tile["iterator_range"]["position"]
-        pbar.set_description(f"Found {len(masks)} grains", refresh=False)
+        for tile in (
+            pbar := tqdm(
+                img.tileIterator(
+                    tile_size=dict(width=tile_size, height=tile_size),
+                    tile_overlap=dict(
+                        x=current_overlap, y=current_overlap, edges=False
+                    ),
+                    format=large_image.constants.TILE_FORMAT_NUMPY,
+                ),
+                mininterval=60,
+                miniters=1,
+            )
+        ):
+            # generate masks for tile
+            with torch.inference_mode():
+                masks = mask_generator.generate(tile["tile"])
 
-        if np.random.random() < visualize_probability:
-            visualize_masks(masks, tile, output_dir, file_name)
+            if max_mask_coverage is not None:
+                tile_area = int(tile["tile"].shape[0] * tile["tile"].shape[1])
+                before = len(masks)
+                masks = filter_large_masks(masks, tile_area, max_mask_coverage)
+                if before != len(masks):
+                    pbar.set_description(
+                        f"Filtered {before - len(masks)} large masks", refresh=False
+                    )
 
-        # adjust coordinates to global
-        masks = [mask_local_to_global(mask, tile) for mask in masks]
+            # current = tile["tile_position"]["position"] + 1
+            # total = tile["iterator_range"]["position"]
+            pbar.set_description(f"Found {len(masks)} grains", refresh=False)
 
-        all_masks.extend(masks_to_rle(masks))
+            if np.random.random() < visualize_probability:
+                visualize_masks(masks, tile, output_dir, file_name)
+
+            # adjust coordinates to global
+            masks = [mask_local_to_global(mask, tile) for mask in masks]
+
+            all_masks.extend(masks_to_rle(masks))
+
+        if save_mask_cache:
+            print(f"Saving mask cache: {cache_path}")
+            with open(cache_path, "wb") as f:
+                pickle.dump(all_masks, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     if nms_thresh is not None:
         print(f"Applying NMS with threshold {nms_thresh} to {len(all_masks)} masks...")
         all_masks = apply_nms(all_masks, nms_thresh)
         print(f"Kept {len(all_masks)} masks after NMS.")
+
+    if merge_overlaps:
+        print(
+            f"Merging overlapping masks with min overlap {merge_min_overlap} "
+            f"and IoM >= {merge_iom_thresh} from {len(all_masks)} masks..."
+        )
+        all_masks = merge_overlapping_masks(
+            all_masks, merge_min_overlap, merge_iom_thresh, verbose=True
+        )
+        print(f"Output {len(all_masks)} masks after overlap merge.")
 
     # save masks to RLE
     with open(os.path.join(output_dir, f"{file_name}.json"), "w") as f:
@@ -405,12 +759,55 @@ def main():
         "--nms-thresh",
         type=float,
         default=0.5,
-        help="IoU threshold for NMS. Default: 0.5",
+        help="Mask IoU threshold for NMS. Default: 0.5",
     )
     parser.add_argument(
         "--no-nms",
         action="store_true",
         help="Disable NMS post-processing.",
+    )
+    parser.add_argument(
+        "--merge-overlap",
+        action="store_true",
+        help="Merge overlapping masks after NMS (if enabled).",
+    )
+    parser.add_argument(
+        "--merge-min-overlap",
+        type=int,
+        default=1,
+        help="Minimum overlapping pixels required to merge (default: 1).",
+    )
+    parser.add_argument(
+        "--merge-iom-thresh",
+        "--merge-iou-thresh",
+        dest="merge_iom_thresh",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum IoM (intersection over minimum) required to merge overlaps "
+            "(0-1). Default: 0.0. Alias: --merge-iou-thresh."
+        ),
+    )
+    parser.add_argument(
+        "--max-mask-coverage",
+        type=float,
+        default=None,
+        help="Drop masks covering >= this fraction of a tile (0-1).",
+    )
+    parser.add_argument(
+        "--save-mask-cache",
+        action="store_true",
+        help="Save raw masks to a pickle before NMS/merge.",
+    )
+    parser.add_argument(
+        "--load-mask-cache",
+        action="store_true",
+        help="Load raw masks from a pickle and skip segmentation.",
+    )
+    parser.add_argument(
+        "--mask-cache-dir",
+        default=None,
+        help="Directory for mask cache pickles (default: output directory).",
     )
     args = parser.parse_args()
 
@@ -422,15 +819,24 @@ def main():
     device = select_device(args.device)
     configure_device(device)
 
-    sam2 = build_sam2(
-        MODEL_CFG, args.checkpoint, device=device, apply_postprocessing=False
-    )
-    mask_generator = SAM2AutomaticMaskGenerator(
-        model=sam2,
-        points_per_side=64,
-        points_per_batch=32,
-        pred_iou_thresh=0.7,
-    )
+    if args.max_mask_coverage is not None and not (0.0 < args.max_mask_coverage <= 1.0):
+        raise ValueError("--max-mask-coverage must be in (0, 1].")
+    if not (0.0 <= args.merge_iom_thresh <= 1.0):
+        raise ValueError("--merge-iom-thresh/--merge-iou-thresh must be in [0, 1].")
+
+    mask_generator: Optional[SAM2AutomaticMaskGenerator] = None
+    if args.load_mask_cache:
+        print("Loading cached masks; skipping SAM 2 initialization.")
+    else:
+        sam2 = build_sam2(
+            MODEL_CFG, args.checkpoint, device=device, apply_postprocessing=False
+        )
+        mask_generator = SAM2AutomaticMaskGenerator(
+            model=sam2,
+            points_per_side=64,
+            points_per_batch=32,
+            pred_iou_thresh=0.7,
+        )
 
     images = collect_images(args.input)
     if len(images) == 0:
@@ -441,6 +847,7 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     nms_thresh = None if args.no_nms else args.nms_thresh
+    merge_overlaps = args.merge_overlap
 
     for idx, img_path in enumerate(images, 1):
         try:
@@ -453,6 +860,13 @@ def main():
                 tile_overlap=args.tile_overlap,
                 visualize_probability=args.visualize_probability,
                 nms_thresh=nms_thresh,
+                merge_overlaps=merge_overlaps,
+                merge_min_overlap=args.merge_min_overlap,
+                merge_iom_thresh=args.merge_iom_thresh,
+                max_mask_coverage=args.max_mask_coverage,
+                save_mask_cache=args.save_mask_cache,
+                load_mask_cache=args.load_mask_cache,
+                mask_cache_dir=args.mask_cache_dir,
             )
         except Exception as e:
             print(f"Failed to process {img_path}: {e}")

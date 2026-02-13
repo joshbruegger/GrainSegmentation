@@ -114,6 +114,17 @@ def _infer_full_height(rle_data: List[Dict[str, Any]]) -> int | None:
     return max_height if found and max_height > 0 else None
 
 
+def _scalar_properties(ann: Dict[str, Any]) -> Dict[str, Any]:
+    props: Dict[str, Any] = {}
+    for key, val in ann.items():
+        if key in ("rle", "segmentation"):
+            continue
+        if isinstance(val, (list, dict)):
+            continue
+        props[key] = val
+    return props
+
+
 def rle_to_geojson(
     rle_data: List[Dict[str, Any]],
     flip_y: bool = True,
@@ -149,9 +160,7 @@ def rle_to_geojson(
                 },
                 "properties": {
                     "id": i,
-                    **{
-                        k: v for k, v in ann.items() if k not in ["rle", "segmentation"]
-                    },
+                    **_scalar_properties(ann),
                 },
             }
             features.append(feature)
