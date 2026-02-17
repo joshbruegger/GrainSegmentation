@@ -240,7 +240,7 @@ def _build_merge_entries(masks: List[dict]) -> List[MergeEntry]:
     return entries
 
 
-def _overlap_pixels(a: MergeEntry, b: MergeEntry, min_overlap: int) -> int:
+def _overlap_pixels(a: MergeEntry, b: MergeEntry) -> int:
     ax0, ay0, ax1, ay1 = a.bbox
     bx0, by0, bx1, by1 = b.bbox
     ox0 = max(ax0, bx0)
@@ -251,8 +251,6 @@ def _overlap_pixels(a: MergeEntry, b: MergeEntry, min_overlap: int) -> int:
         return 0
     h = oy1 - oy0 + 1
     w = ox1 - ox0 + 1
-    if h * w < min_overlap:
-        return 0
     a_x0 = ox0 - ax0
     a_y0 = oy0 - ay0
     b_x0 = ox0 - bx0
@@ -264,12 +262,9 @@ def _overlap_pixels(a: MergeEntry, b: MergeEntry, min_overlap: int) -> int:
 
 def merge_overlapping_masks(
     masks: List[dict],
-    min_overlap: int,
     min_iom: float,
     verbose: bool = True,
 ) -> List[dict]:
-    if min_overlap < 1:
-        raise ValueError("min_overlap must be >= 1 to represent pixel overlap")
     if not (0.0 <= min_iom <= 1.0):
         raise ValueError("min_iom must be within [0, 1].")
     entries = _build_merge_entries(masks)
@@ -297,19 +292,20 @@ def merge_overlapping_masks(
         a = entries[i]
         for j in range(i + 1, n):
             b = entries[j]
-            overlap = _overlap_pixels(a, b, min_overlap)
-            if overlap >= min_overlap:
-                should_merge = False
-                if min_iom <= 0.0:
-                    should_merge = True
-                else:
-                    min_area = min(a.area, b.area)
-                    if min_area > 0:
-                        iom = overlap / min_area
-                        should_merge = iom >= min_iom
-                if should_merge and find(i) != find(j):
-                    union(i, j)
-                    merge_pairs += 1
+            overlap = _overlap_pixels(a, b)
+            if overlap <= 0:
+                continue
+            should_merge = False
+            if min_iom <= 0.0:
+                should_merge = True
+            else:
+                min_area = min(a.area, b.area)
+                if min_area > 0:
+                    iom = overlap / min_area
+                    should_merge = iom >= min_iom
+            if should_merge and find(i) != find(j):
+                union(i, j)
+                merge_pairs += 1
 
     groups: Dict[int, List[MergeEntry]] = {}
     for idx, entry in enumerate(entries):
@@ -502,6 +498,44 @@ def filter_large_masks(
     return keep
 
 
+def _mask_area(mask: dict) -> int:
+    area = mask.get("area")
+    if area is not None:
+        try:
+            return int(area)
+        except (TypeError, ValueError):
+            pass
+
+    seg = mask.get("segmentation")
+    if isinstance(seg, np.ndarray):
+        return int(seg.sum())
+    if isinstance(seg, dict) and "counts" in seg:
+        try:
+            return int(decode_rle(seg).sum())
+        except Exception:
+            pass
+
+    rle = mask.get("rle")
+    if isinstance(rle, dict) and "counts" in rle:
+        try:
+            return int(decode_rle(rle).sum())
+        except Exception:
+            pass
+
+    return 0
+
+
+def filter_large_masks_area(masks: List[dict], max_area: int) -> List[dict]:
+    if max_area <= 0:
+        return masks
+    keep: List[dict] = []
+    for mask in masks:
+        area = _mask_area(mask)
+        if area < max_area:
+            keep.append(mask)
+    return keep
+
+
 def segment_image(
     image_path: str,
     output_dir: str,
@@ -511,9 +545,9 @@ def segment_image(
     visualize_probability: float = 0.1,
     nms_thresh: Optional[float] = None,
     merge_overlaps: bool = False,
-    merge_min_overlap: int = 1,
     merge_iom_thresh: float = 0.0,
     max_mask_coverage: Optional[float] = None,
+    max_mask_area: Optional[int] = None,
     save_mask_cache: bool = False,
     load_mask_cache: bool = False,
     mask_cache_dir: Optional[str] = None,
@@ -545,6 +579,13 @@ def segment_image(
         print(f"Loading mask cache: {cache_path}")
         with open(cache_path, "rb") as f:
             all_masks = pickle.load(f)
+        if max_mask_area is not None:
+            before = len(all_masks)
+            all_masks = filter_large_masks_area(all_masks, max_mask_area)
+            if before != len(all_masks):
+                print(
+                    f"Filtered {before - len(all_masks)} masks by max area {max_mask_area}"
+                )
     else:
         if mask_generator is None:
             raise ValueError("mask_generator is required when not loading cache.")
@@ -585,6 +626,13 @@ def segment_image(
                     pbar.set_description(
                         f"Filtered {before - len(masks)} large masks", refresh=False
                     )
+            if max_mask_area is not None:
+                before = len(masks)
+                masks = filter_large_masks_area(masks, max_mask_area)
+                if before != len(masks):
+                    pbar.set_description(
+                        f"Filtered {before - len(masks)} masks by area", refresh=False
+                    )
 
             # current = tile["tile_position"]["position"] + 1
             # total = tile["iterator_range"]["position"]
@@ -610,12 +658,10 @@ def segment_image(
 
     if merge_overlaps:
         print(
-            f"Merging overlapping masks with min overlap {merge_min_overlap} "
-            f"and IoM >= {merge_iom_thresh} from {len(all_masks)} masks..."
+            f"Merging overlapping masks with IoM >= {merge_iom_thresh} "
+            f"from {len(all_masks)} masks..."
         )
-        all_masks = merge_overlapping_masks(
-            all_masks, merge_min_overlap, merge_iom_thresh, verbose=True
-        )
+        all_masks = merge_overlapping_masks(all_masks, merge_iom_thresh, verbose=True)
         print(f"Output {len(all_masks)} masks after overlap merge.")
 
     # save masks to RLE
@@ -772,12 +818,6 @@ def main():
         help="Merge overlapping masks after NMS (if enabled).",
     )
     parser.add_argument(
-        "--merge-min-overlap",
-        type=int,
-        default=1,
-        help="Minimum overlapping pixels required to merge (default: 1).",
-    )
-    parser.add_argument(
         "--merge-iom-thresh",
         "--merge-iou-thresh",
         dest="merge_iom_thresh",
@@ -793,6 +833,12 @@ def main():
         type=float,
         default=None,
         help="Drop masks covering >= this fraction of a tile (0-1).",
+    )
+    parser.add_argument(
+        "--max-mask-area",
+        type=int,
+        default=None,
+        help="Drop masks covering >= this many pixels (applied before NMS/merge).",
     )
     parser.add_argument(
         "--save-mask-cache",
@@ -821,6 +867,8 @@ def main():
 
     if args.max_mask_coverage is not None and not (0.0 < args.max_mask_coverage <= 1.0):
         raise ValueError("--max-mask-coverage must be in (0, 1].")
+    if args.max_mask_area is not None and args.max_mask_area <= 0:
+        raise ValueError("--max-mask-area must be a positive integer.")
     if not (0.0 <= args.merge_iom_thresh <= 1.0):
         raise ValueError("--merge-iom-thresh/--merge-iou-thresh must be in [0, 1].")
 
@@ -861,9 +909,9 @@ def main():
                 visualize_probability=args.visualize_probability,
                 nms_thresh=nms_thresh,
                 merge_overlaps=merge_overlaps,
-                merge_min_overlap=args.merge_min_overlap,
                 merge_iom_thresh=args.merge_iom_thresh,
                 max_mask_coverage=args.max_mask_coverage,
+                max_mask_area=args.max_mask_area,
                 save_mask_cache=args.save_mask_cache,
                 load_mask_cache=args.load_mask_cache,
                 mask_cache_dir=args.mask_cache_dir,

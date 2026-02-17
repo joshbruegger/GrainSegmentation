@@ -3,7 +3,7 @@
 #SBATCH --output=logs/sam2-%j.log
 #SBATCH --mem=60G
 #SBATCH --gpus-per-node=a100:1
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 
 echo "Loading modules..."
 module purge
