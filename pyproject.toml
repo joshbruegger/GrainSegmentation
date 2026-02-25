@@ -17,6 +17,10 @@ dependencies = [
     "large-image-source-tiff>=1.33.5",
     "large-image-source-tifffile>=1.33.5",
     "tqdm>=4.67.1",
+    "geopandas>=1.1.2",
+    "pygeoops>=0.6.0",
+    "rasterio>=1.5.0",
+    "shapelysmooth>=0.2.1",
 ]
 
 [tool.semantic_release]

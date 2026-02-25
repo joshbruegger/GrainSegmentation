@@ -5,6 +5,11 @@ import cv2
 import sys
 from typing import List, Dict, Any
 
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - optional progress bar
+    tqdm = None
+
 
 def decode_rle(rle_dict: Dict[str, Any]) -> np.ndarray:
     """
@@ -168,40 +173,74 @@ def rle_to_geojson(
     return {"type": "FeatureCollection", "features": features}
 
 
+def _ring_to_int(ring: List[List[float]], flip_y: bool) -> np.ndarray | None:
+    if not ring:
+        return None
+    arr = np.array(ring, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return None
+    if flip_y:
+        arr[:, 1] = -arr[:, 1]
+    arr = np.rint(arr[:, :2]).astype(np.int32)
+    if arr.shape[0] < 3:
+        return None
+    return arr
+
+
+def _draw_polygon(
+    mask: np.ndarray, rings: List[List[List[float]]], flip_y: bool
+) -> None:
+    if not rings:
+        return
+    outer_ring = _ring_to_int(rings[0], flip_y)
+    if outer_ring is None:
+        return
+    cv2.fillPoly(mask, [outer_ring], 1)
+    for hole in rings[1:]:
+        hole_ring = _ring_to_int(hole, flip_y)
+        if hole_ring is None:
+            continue
+        cv2.fillPoly(mask, [hole_ring], 0)
+
+
 def geojson_to_rle(
-    geojson_data: Dict[str, Any], height: int, width: int
+    geojson_data: Dict[str, Any], height: int, width: int, flip_y: bool = True
 ) -> List[Dict[str, Any]]:
     rle_list = []
 
     # We will create one mask per feature
     # Note: If features overlap, this creates separate masks.
 
-    for i, feature in enumerate(geojson_data.get("features", [])):
+    features = geojson_data.get("features", [])
+    iterator = enumerate(features)
+    if tqdm is not None:
+        iterator = tqdm(iterator, total=len(features), desc="GeoJSON features")
+    for i, feature in iterator:
         geom = feature.get("geometry")
-        if not geom or geom["type"] != "Polygon":
-            # Support MultiPolygon? For now, stick to Polygon
-            if geom["type"] == "MultiPolygon":
-                # Handle MultiPolygon by splitting or rendering all
-                pass  # TODO
+        if not geom:
             continue
 
-        # Parse coordinates
-        # GeoJSON Polygon: [ [ [x,y], ... ], [ [x,y], ... ] ] (First is outer, others are holes)
-        rings = geom["coordinates"]
-        if not rings:
+        geom_type = geom.get("type")
+        coords = geom.get("coordinates")
+        if not coords:
             continue
 
-        # Create empty mask
         mask = np.zeros((height, width), dtype=np.uint8)
 
-        # Draw outer ring
-        outer_ring = np.array(rings[0], dtype=np.int32)
-        cv2.fillPoly(mask, [outer_ring], 1)
+        if geom_type == "Polygon":
+            # GeoJSON Polygon: [ [ [x,y], ... ], [ [x,y], ... ] ]
+            _draw_polygon(mask, coords, flip_y)
+        elif geom_type == "MultiPolygon":
+            # GeoJSON MultiPolygon: [ [ [ [x,y], ... ], ... ], ... ]
+            for poly in coords:
+                if not poly:
+                    continue
+                _draw_polygon(mask, poly, flip_y)
+        else:
+            continue
 
-        # Draw holes (subtract)
-        for hole in rings[1:]:
-            hole_ring = np.array(hole, dtype=np.int32)
-            cv2.fillPoly(mask, [hole_ring], 0)
+        if not mask.any():
+            continue
 
         # Encode
         rle = encode_rle(mask)
@@ -228,7 +267,7 @@ def main():
     parser.add_argument(
         "--no-flip-y",
         action="store_true",
-        help="Do not flip Y when converting RLE to GeoJSON",
+        help="Do not flip Y (affects both rle2json and json2rle)",
     )
 
     args = parser.parse_args()
@@ -258,7 +297,9 @@ def main():
             data = json.load(f)
 
         print("Converting to RLE...")
-        rle_data = geojson_to_rle(data, args.height, args.width)
+        rle_data = geojson_to_rle(
+            data, args.height, args.width, flip_y=not args.no_flip_y
+        )
 
         print(f"Writing to {args.output}...")
         with open(args.output, "w") as f:
