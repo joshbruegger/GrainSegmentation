@@ -16,12 +16,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         default=None,
-        help="Path to the single-image U-Net checkpoint (.keras)",
+        help="Path to a checkpoint to initialize weights (.keras).",
     )
     parser.add_argument(
         "--resume",
         default=None,
-        help="Path to a 7-input checkpoint to resume training (.keras)",
+        help="Path to a checkpoint to resume training (.keras).",
     )
     parser.add_argument(
         "--output-model", required=True, help="Path to save the fine-tuned model"
@@ -42,7 +42,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional extra suffix before the raster mask extension",
     )
-    parser.add_argument("--num-inputs", type=int, default=7)
+    parser.add_argument(
+        "--num-inputs",
+        type=int,
+        default=7,
+        help="Number of input images (1=PPL, 2=PPL+composite, 7=PPL+all PPX).",
+    )
     parser.add_argument("--test-size", type=float, default=0.15)
     parser.add_argument("--val-size", type=float, default=0.25)
     parser.add_argument("--seed", type=int, default=42)
@@ -73,8 +78,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.num_inputs != 7:
-        raise ValueError("This training pipeline expects --num-inputs 7.")
+    if args.num_inputs not in {1, 2, 7}:
+        raise ValueError("--num-inputs must be one of: 1, 2, 7.")
     if args.checkpoint and args.resume:
         raise ValueError("Use only one of --checkpoint or --resume.")
     if args.split_tile_size < 0:
