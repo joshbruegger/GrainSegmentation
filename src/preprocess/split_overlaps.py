@@ -4,12 +4,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import geopandas as gpd
-import shapely
 
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon
 from shapely.ops import nearest_points, split, unary_union
 from shapely.prepared import prep
-from shapely import shortest_line
+from shapely import shortest_line, set_precision
 
 import pygeoops
 from shapelysmooth import chaikin_smooth
@@ -167,8 +166,14 @@ def _assign_halves(
         return None
 
     for midpoint in midpoints:
-        transect_a.append(shortest_line(midpoint, exclusive_a.boundary))
-        transect_b.append(shortest_line(midpoint, exclusive_b.boundary))
+        a = shortest_line(midpoint, exclusive_a.boundary)
+        a = pygeoops.extend_line_by_distance(a, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2)
+
+        b = shortest_line(midpoint, exclusive_b.boundary)
+        b = pygeoops.extend_line_by_distance(b, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2)
+
+        transect_a.append(a)
+        transect_b.append(b)
 
     def _assign_piece(pieces_list: List[Polygon], transect: LineString):
         intercepted_pieces = []
@@ -178,28 +183,26 @@ def _assign_halves(
                 transect, grid_size=HARD_SNAP_TOL
             )
 
-            # 2. Count the number of intersection points
-            num_intersections = 0
-            if boundary_intersection.is_empty:
-                num_intersections = 0
-            elif boundary_intersection.geom_type == "Point":
-                num_intersections = 1
-            elif boundary_intersection.geom_type in (
+            if (
+                boundary_intersection is None
+                or boundary_intersection.is_empty
+                or boundary_intersection.geom_type == "Point"
+            ):
+                continue
+
+            if boundary_intersection.geom_type in (
                 "MultiPoint",
                 "GeometryCollection",
             ):
-                # Count only the Point geometries
                 num_intersections = sum(
                     1
                     for geom in boundary_intersection.geoms
                     if geom.geom_type == "Point"
                 )
-            elif boundary_intersection.geom_type == "LineString":
-                # If they overlap along a line, you might consider that multiple points or a valid intersection
-                num_intersections = 2
+                if num_intersections < 2:
+                    continue
 
-            if num_intersections >= 2:
-                intercepted_pieces.append(piece)
+            intercepted_pieces.append(piece)
 
         if len(intercepted_pieces) == 0:
             return None
@@ -219,11 +222,17 @@ def _assign_halves(
 
     transects = transect_a + transect_b
 
-    unassigned = [
-        piece
-        for piece in pieces_list
-        if piece not in pieces_a and piece not in pieces_b
-    ]
+    a_union = unary_union(pieces_a)
+    b_union = unary_union(pieces_b)
+
+    for piece in pieces_list:
+        if piece not in pieces_a and piece not in pieces_b:
+            if a_union.touches(piece) or a_union.overlaps(piece):
+                pieces_b.append(piece)
+            elif b_union.touches(piece) or b_union.overlaps(piece):
+                pieces_a.append(piece)
+            else:
+                unassigned.append(piece)
 
     return pieces_a, pieces_b, unassigned, midpoints, transects
 
@@ -317,8 +326,7 @@ def _split_overlap(
         if part.is_empty:
             continue
         if not part.is_valid:
-            part = pygeoops.make_valid(part)
-            # part = part.buffer(0)
+            part = part.buffer(0)
         if part.is_empty:
             continue
         if min_area > 0.0 and part.area < min_area:
@@ -390,45 +398,15 @@ def _split_overlap(
     def _apply_assignment(src_a, src_b, keep_a, keep_b):
         new_a = src_a.difference(keep_b) if keep_b is not None else src_a
         new_b = src_b.difference(keep_a) if keep_a is not None else src_b
+
         new_a = pygeoops.make_valid(new_a, only_if_invalid=True)
         new_b = pygeoops.make_valid(new_b, only_if_invalid=True)
+
+        new_a = set_precision(new_a, grid_size=HARD_SNAP_TOL)
+        new_b = set_precision(new_b, grid_size=HARD_SNAP_TOL)
         return new_a, new_b
 
     poly_a, poly_b = _apply_assignment(base_a, base_b, overlap_a, overlap_b)
-
-    def _num_parts(geom):
-        if geom is None or geom.is_empty:
-            return 0
-        return len(_as_polygon_parts(geom))
-
-    # base_a_parts = _num_parts(base_a)
-    # base_b_parts = _num_parts(base_b)
-    # poly_a_parts = _num_parts(poly_a)
-    # poly_b_parts = _num_parts(poly_b)
-
-    # base_a_holes = _has_holes(base_a)
-    # base_b_holes = _has_holes(base_b)
-    # poly_a_holes = _has_holes(poly_a)
-    # poly_b_holes = _has_holes(poly_b)
-
-    # should_swap = (
-    #     (poly_a_parts > base_a_parts)
-    #     or (poly_b_parts > base_b_parts)
-    #     or (poly_a_holes and not base_a_holes)
-    #     or (poly_b_holes and not base_b_holes)
-    # )
-
-    # if should_swap:
-    #     swapped_a, swapped_b = _apply_assignment(base_a, base_b, overlap_b, overlap_a)
-
-    #     # We prefer the swap if it doesn't break things worse, but we ALWAYS accept the split
-    #     # even if it creates multipolygons, because we will explode them at the end.
-    #     poly_a, poly_b = swapped_a, swapped_b
-    #     swap = {"A": "B", "B": "A"}
-    #     split_pieces = [
-    #         {**record, "assigned": swap.get(record["assigned"], record["assigned"])}
-    #         for record in split_pieces
-    #     ]
 
     return (
         poly_a,
@@ -661,9 +639,7 @@ def resolve_overlaps(
     List[Polygon], int, List[dict], List[dict], List[dict], List[dict], List[dict]
 ]:
     # Convert all geometries to a fixed precision grid to avoid topological errors
-    geoms = shapely.set_precision(
-        geoms, grid_size=HARD_SNAP_TOL, mode="valid_output"
-    ).tolist()
+    geoms = set_precision(geoms, grid_size=HARD_SNAP_TOL, mode="valid_output").tolist()
 
     # Iterate through pairs with a spatial index to resolve overlaps in-place.
     changed = 0
