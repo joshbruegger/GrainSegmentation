@@ -35,27 +35,6 @@ def _as_polygon_parts(geom) -> List[Polygon]:
     return []
 
 
-def _force_single_polygon(geom) -> Optional[Polygon]:
-    """Ensure a geometry is strictly a single Polygon, keeping the largest part if multiple exist."""
-    if geom is None or geom.is_empty:
-        return None
-    if geom.geom_type == "Polygon":
-        return geom
-    parts = _as_polygon_parts(geom)
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-    return max(parts, key=lambda p: p.area)
-
-
-def _has_holes(geom) -> bool:
-    """Return True if any polygon part has interior rings."""
-    if geom is None or geom.is_empty:
-        return False
-    return any(poly.interiors for poly in _as_polygon_parts(geom))
-
-
 def _centerline(poly: Polygon) -> Optional[LineString]:
     # Simplify the polygon a bit to speed up pygeoops centerline computation
     poly_simp = poly.simplify(0.5, preserve_topology=True)
@@ -129,6 +108,38 @@ def _split_by_centerline(
     return [poly], line
 
 
+def _assign_piece(pieces_list: List[Polygon], transect: LineString):
+    intercepted_pieces = []
+    for piece in pieces_list:
+        # 1. Get the intersection between the piece's boundary and the transect
+        boundary_intersection = piece.boundary.intersection(
+            transect, grid_size=HARD_SNAP_TOL
+        )
+
+        if (
+            boundary_intersection is None
+            or boundary_intersection.is_empty
+            or boundary_intersection.geom_type == "Point"
+        ):
+            continue
+
+        if boundary_intersection.geom_type in (
+            "MultiPoint",
+            "GeometryCollection",
+        ):
+            num_intersections = sum(
+                1 for geom in boundary_intersection.geoms if geom.geom_type == "Point"
+            )
+            if num_intersections < 2:
+                continue
+
+        intercepted_pieces.append(piece)
+
+    if len(intercepted_pieces) == 0:
+        return None
+    return intercepted_pieces
+
+
 def _assign_halves(
     pieces_list: List[Polygon],
     exclusive_a,
@@ -143,7 +154,8 @@ def _assign_halves(
     transect_a = []
     transect_b = []
 
-    # clip the line to the pieces_list
+    # To avoid problems in which the centerline is not fully contained in the pieces_list,
+    # we clip it to the pieces_list. We get a midpoint for each piece.
     clipped_centerline = centerline.intersection(unary_union(pieces_list))
 
     if clipped_centerline is None or clipped_centerline.is_empty:
@@ -165,6 +177,9 @@ def _assign_halves(
     if len(midpoints) == 0:
         return None
 
+    # For each midpoint, we get the transects by getting the shortest line
+    # between the midpoint and the exclusive_a and exclusive_b boundaries
+    # We extend the lines by a small amount to avoid problems with precision.
     for midpoint in midpoints:
         a = shortest_line(midpoint, exclusive_a.boundary)
         a = pygeoops.extend_line_by_distance(a, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2)
@@ -175,42 +190,9 @@ def _assign_halves(
         transect_a.append(a)
         transect_b.append(b)
 
-    def _assign_piece(pieces_list: List[Polygon], transect: LineString):
-        intercepted_pieces = []
-        for piece in pieces_list:
-            # 1. Get the intersection between the piece's boundary and the transect
-            boundary_intersection = piece.boundary.intersection(
-                transect, grid_size=HARD_SNAP_TOL
-            )
-
-            if (
-                boundary_intersection is None
-                or boundary_intersection.is_empty
-                or boundary_intersection.geom_type == "Point"
-            ):
-                continue
-
-            if boundary_intersection.geom_type in (
-                "MultiPoint",
-                "GeometryCollection",
-            ):
-                num_intersections = sum(
-                    1
-                    for geom in boundary_intersection.geoms
-                    if geom.geom_type == "Point"
-                )
-                if num_intersections < 2:
-                    continue
-
-            intercepted_pieces.append(piece)
-
-        if len(intercepted_pieces) == 0:
-            return None
-        return intercepted_pieces
-
+    # Assign pieces to sides based on their intersection with the transects
     pieces_a = []
     pieces_b = []
-    unassigned = []
     for transect in transect_a:
         hit_pieces = _assign_piece(pieces_list, transect)
         if hit_pieces is not None:
@@ -220,11 +202,23 @@ def _assign_halves(
         if hit_pieces is not None:
             pieces_b.extend(hit_pieces)
 
-    transects = transect_a + transect_b
+    # Resolve conflicts between pieces assigned to both sides
+    # Assign the piece to the side closest to its representative point
+    for piece in pieces_list:
+        in_a = any(piece is p for p in pieces_a)
+        in_b = any(piece is p for p in pieces_b)
+        if in_a and in_b:
+            p_rep = piece.representative_point()
+            if p_rep.distance(exclusive_a) < p_rep.distance(exclusive_b):
+                pieces_b.remove(piece)
+            else:
+                pieces_a.remove(piece)
 
+    # Simple heuristic to assign unassigned pieces to the other side
+    # If everything fails, add piece to unassigned
     a_union = unary_union(pieces_a)
     b_union = unary_union(pieces_b)
-
+    unassigned = []
     for piece in pieces_list:
         if piece not in pieces_a and piece not in pieces_b:
             if a_union.touches(piece) or a_union.overlaps(piece):
@@ -234,7 +228,7 @@ def _assign_halves(
             else:
                 unassigned.append(piece)
 
-    return pieces_a, pieces_b, unassigned, midpoints, transects
+    return pieces_a, pieces_b, unassigned, midpoints, transect_a + transect_b
 
 
 def _split_overlap(
@@ -865,19 +859,6 @@ def main() -> None:
     gdf = gpd.read_file(input_path, layer=args.layer)
     if gdf.empty:
         raise SystemExit("No features found in input.")
-
-    # Fail early if the input already contains holes.
-    # print("Checking for holes in input polygons...")
-    # hole_indices: List[int] = []
-    # for idx, geom in gdf.geometry.items():
-    #     if _has_holes(geom):
-    #         hole_indices.append(int(idx))
-    # if hole_indices:
-    #     sample = ", ".join(str(x) for x in hole_indices[:10])
-    #     raise SystemExit(
-    #         "Input polygons contain holes; fix before processing. "
-    #         f"Found {len(hole_indices)} features (sample indices: {sample})."
-    #     )
 
     out_layer = args.output_layer or args.layer or input_path.stem
 
