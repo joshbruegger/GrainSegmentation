@@ -248,8 +248,10 @@ def _split_overlap(
     List[LineString],
 ]:
     # Make sure the polygons are valid
-    poly_a = pygeoops.make_valid(poly_a, only_if_invalid=True)
-    poly_b = pygeoops.make_valid(poly_b, only_if_invalid=True)
+    poly_a = pygeoops.make_valid(poly_a, only_if_invalid=True, keep_collapsed=False)
+    poly_b = pygeoops.make_valid(poly_b, only_if_invalid=True, keep_collapsed=False)
+    poly_a = set_precision(poly_a, grid_size=HARD_SNAP_TOL)
+    poly_b = set_precision(poly_b, grid_size=HARD_SNAP_TOL)
 
     if getattr(poly_a, "geom_type", "") == "GeometryCollection":
         parts = _as_polygon_parts(poly_a)
@@ -279,8 +281,14 @@ def _split_overlap(
     )
 
     # Areas exclusive to each polygon are used to anchor assignments.
-    exclusive_a = pygeoops.make_valid(poly_a.difference(overlap), only_if_invalid=True)
-    exclusive_b = pygeoops.make_valid(poly_b.difference(overlap), only_if_invalid=True)
+    exclusive_a = pygeoops.make_valid(
+        poly_a.difference(overlap), only_if_invalid=True, keep_collapsed=False
+    )
+    exclusive_b = pygeoops.make_valid(
+        poly_b.difference(overlap), only_if_invalid=True, keep_collapsed=False
+    )
+    exclusive_a = set_precision(exclusive_a, grid_size=HARD_SNAP_TOL)
+    exclusive_b = set_precision(exclusive_b, grid_size=HARD_SNAP_TOL)
     context = ""
     if pair_i is not None and pair_j is not None:
         context = f" for polygon pair ({pair_i}, {pair_j})"
@@ -297,11 +305,9 @@ def _split_overlap(
             )
         exclusive_a = None
         exclusive_b = None
+
     boundary_a = poly_a.boundary
     boundary_b = poly_b.boundary
-    if boundary_a is None or boundary_b is None:
-        print(f"DEBUG: poly_a={type(poly_a)}, boundary_a={type(boundary_a)}")
-        print(f"DEBUG: poly_b={type(poly_b)}, boundary_b={type(boundary_b)}")
     boundary_intersection = boundary_a.intersection(boundary_b)
 
     a_parts: List[Polygon] = []
@@ -383,8 +389,14 @@ def _split_overlap(
     overlap_a = unary_union(a_parts) if a_parts else None
     overlap_b = unary_union(b_parts) if b_parts else None
 
-    overlap_a = pygeoops.make_valid(overlap_a, only_if_invalid=True)
-    overlap_b = pygeoops.make_valid(overlap_b, only_if_invalid=True)
+    overlap_a = pygeoops.make_valid(
+        overlap_a, only_if_invalid=True, keep_collapsed=False
+    )
+    overlap_b = pygeoops.make_valid(
+        overlap_b, only_if_invalid=True, keep_collapsed=False
+    )
+    overlap_a = set_precision(overlap_a, grid_size=HARD_SNAP_TOL)
+    overlap_b = set_precision(overlap_b, grid_size=HARD_SNAP_TOL)
 
     base_a = poly_a
     base_b = poly_b
@@ -393,9 +405,8 @@ def _split_overlap(
         new_a = src_a.difference(keep_b) if keep_b is not None else src_a
         new_b = src_b.difference(keep_a) if keep_a is not None else src_b
 
-        new_a = pygeoops.make_valid(new_a, only_if_invalid=True)
-        new_b = pygeoops.make_valid(new_b, only_if_invalid=True)
-
+        new_a = pygeoops.make_valid(new_a, only_if_invalid=True, keep_collapsed=False)
+        new_b = pygeoops.make_valid(new_b, only_if_invalid=True, keep_collapsed=False)
         new_a = set_precision(new_a, grid_size=HARD_SNAP_TOL)
         new_b = set_precision(new_b, grid_size=HARD_SNAP_TOL)
         return new_a, new_b
