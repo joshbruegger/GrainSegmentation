@@ -6,12 +6,13 @@ from typing import List, Optional, Tuple
 import geopandas as gpd
 
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon
-from shapely.ops import nearest_points, split, unary_union
+from shapely.geometry.multipoint import MultiPoint
+from shapely.ops import nearest_points, split, unary_union, substring
 from shapely.prepared import prep
 from shapely import shortest_line, set_precision
 
 import pygeoops
-from shapelysmooth import chaikin_smooth
+from shapelysmooth import chaikin_smooth, taubin_smooth
 import networkx as nx
 from tqdm import tqdm
 
@@ -59,7 +60,11 @@ def _centerline(poly: Polygon) -> Optional[LineString]:
 def _smooth_centerline(line: LineString) -> LineString:
     if line.is_empty:
         return line
-    smoothed = chaikin_smooth(line, CENTERLINE_SMOOTH_ITERS, keep_ends=True)
+
+    # Smoothing: Taubin for remove voronoi zigzags, Chaikin for sharp corners
+    smoothed = taubin_smooth(line, steps=int(CENTERLINE_SMOOTH_ITERS / 2))
+    smoothed = chaikin_smooth(smoothed, CENTERLINE_SMOOTH_ITERS, keep_ends=True)
+
     if isinstance(smoothed, LineString):
         return smoothed
     if hasattr(smoothed, "geom_type") and smoothed.geom_type == "LineString":
@@ -67,45 +72,142 @@ def _smooth_centerline(line: LineString) -> LineString:
     return line
 
 
-def _force_endpoints_to_intersection(line: LineString, intersection_geom) -> LineString:
+def _force_endpoints_to_geom(
+    line: LineString, geom: MultiPoint, replace: bool = True
+) -> LineString:
     # Snap the line's endpoints onto the polygon-boundary intersection geometry.
-    if line.is_empty:
+    if line.is_empty or geom is None or geom.is_empty:
+        print("Line or geom is empty, skipping force_endpoints_to_geom")
         return line
-    if intersection_geom is None or intersection_geom.is_empty:
-        return line
+
     coords = list(line.coords)
     if len(coords) < 2:
+        print("Line has less than 2 coordinates, skipping force_endpoints_to_geom")
         return line
+
     start = Point(coords[0])
     end = Point(coords[-1])
-    snapped_start = nearest_points(start, intersection_geom)[1]
-    snapped_end = nearest_points(end, intersection_geom)[1]
-    if snapped_start.is_empty or snapped_end.is_empty:
+    snapped_start = nearest_points(start, geom)[1]
+    snapped_end = nearest_points(end, geom)[1]
+
+    # If the endpoints are the same and the geometry is a multipoint,
+    # try to find another point to snap the furthest point to.
+    if (
+        snapped_start.distance(snapped_end) <= HARD_SNAP_TOL
+        and geom.geom_type == "MultiPoint"
+    ):
+        remaining = MultiPoint([p for p in geom.geoms if not p.equals(snapped_end)])
+        if len(remaining.geoms) == 0:
+            return line
+
+        if start.distance(snapped_start) < end.distance(snapped_start):
+            kept = snapped_start
+            target = end
+            is_start = False
+        else:
+            kept = snapped_end
+            target = start
+            is_start = True
+
+        # Vector from the target endpoint to the kept point
+        vk_x = kept.x - target.x
+        vk_y = kept.y - target.y
+
+        snapped_point = None
+        while True:
+            candidate = nearest_points(target, remaining)[1]
+
+            # Vector from the target endpoint to the candidate point
+            vc_x = candidate.x - target.x
+            vc_y = candidate.y - target.y
+
+            # Dot product < 0 means the angle is > 90 degrees (opposite directions)
+            if (vk_x * vc_x + vk_y * vc_y) < 0:
+                snapped_point = candidate
+                break
+            remaining = MultiPoint(
+                [p for p in remaining.geoms if not p.equals(candidate)]
+            )
+            if len(remaining.geoms) == 0:
+                break
+
+        if snapped_point is None:
+            return line
+
+        if is_start:
+            snapped_start = snapped_point
+        else:
+            snapped_end = snapped_point
+
+    if (
+        snapped_start.is_empty
+        or snapped_end.is_empty
+        or snapped_start.distance(snapped_end) <= HARD_SNAP_TOL
+    ):
+        print("Failed to snap endpoints, skipping force_endpoints_to_geom")
         return line
-    if snapped_start.equals(snapped_end):
-        return line
-    coords[0] = (snapped_start.x, snapped_start.y)
-    coords[-1] = (snapped_end.x, snapped_end.y)
+
+    if replace:
+        d1 = line.project(snapped_start)
+        d2 = line.project(snapped_end)
+
+        is_flipped = False
+        if d1 > d2:
+            d1, d2 = d2, d1
+            snapped_start, snapped_end = snapped_end, snapped_start
+            is_flipped = True
+
+        trimmed = substring(line, d1, d2)
+        if (
+            trimmed.is_empty
+            or trimmed.geom_type != "LineString"
+            or len(trimmed.coords) < 2
+        ):
+            coords[0] = (snapped_start.x, snapped_start.y)
+            coords[-1] = (snapped_end.x, snapped_end.y)
+        else:
+            new_coords = list(trimmed.coords)
+            new_coords[0] = (snapped_start.x, snapped_start.y)
+            new_coords[-1] = (snapped_end.x, snapped_end.y)
+            if is_flipped:
+                new_coords.reverse()
+            coords = new_coords
+    else:
+        if snapped_start.distance(start) > HARD_SNAP_TOL:
+            coords.insert(0, (snapped_start.x, snapped_start.y))
+        if snapped_end.distance(end) > HARD_SNAP_TOL:
+            coords.append((snapped_end.x, snapped_end.y))
 
     return LineString(coords)
 
 
 def _split_by_centerline(
     poly: Polygon, boundary_intersection
-) -> Tuple[List[Polygon], Optional[LineString]]:
+) -> Tuple[List[Polygon], Optional[LineString], Optional[LineString]]:
     # Split the overlap polygon using the centerline after endpoint snapping.
     line = _centerline(poly)
+    raw_line = line
     if line is None:
-        return [poly], None
-    line = _force_endpoints_to_intersection(line, boundary_intersection)
-    line = _smooth_centerline(line)
-    # line = snap(line, boundary_intersection, HARD_SNAP_TOL)
+        return [poly], None, None
 
-    direct_parts = [p for p in split(poly, line).geoms if not p.is_empty]
-    # direct_parts = _validate_split_pieces(direct_parts, poly)
-    if len(direct_parts) >= 2:
-        return direct_parts, line
-    return [poly], line
+    # Add endpoints to the boundary intersection and then
+    # the polygon boundary (hopefully these are the same)
+    line = _force_endpoints_to_geom(line, boundary_intersection)
+    line = _force_endpoints_to_geom(line, poly.boundary)
+
+    line = line.segmentize(line.length / 16.0)
+
+    # Smooth the centerline and then ensure it still touches the polygon boundary
+    line = _smooth_centerline(line)
+    line = _force_endpoints_to_geom(line, poly.boundary)
+    line = set_precision(line, grid_size=HARD_SNAP_TOL)
+
+    parts = [p for p in split(poly, line).geoms if not p.is_empty]
+
+    if len(parts) < 2:
+        return [poly], line, raw_line
+
+    return parts, line, raw_line
 
 
 def _assign_piece(pieces_list: List[Polygon], transect: LineString):
@@ -156,7 +258,8 @@ def _assign_halves(
 
     # To avoid problems in which the centerline is not fully contained in the pieces_list,
     # we clip it to the pieces_list. We get a midpoint for each piece.
-    clipped_centerline = centerline.intersection(unary_union(pieces_list))
+    pieces_list_union = unary_union(pieces_list)
+    clipped_centerline = centerline.intersection(pieces_list_union)
 
     if clipped_centerline is None or clipped_centerline.is_empty:
         midpoints.append(centerline.interpolate(0.5, normalized=True))
@@ -174,6 +277,13 @@ def _assign_halves(
             if geom is not None and not geom.is_empty and geom.geom_type == "LineString"
         )
 
+    # If any of the midpoints fall on the boundary of the pieces_list, we remove them
+    midpoints = [
+        midpoint
+        for midpoint in midpoints
+        if pieces_list_union.boundary.distance(midpoint) > HARD_SNAP_TOL
+    ]
+
     if len(midpoints) == 0:
         return None
 
@@ -182,13 +292,18 @@ def _assign_halves(
     # We extend the lines by a small amount to avoid problems with precision.
     for midpoint in midpoints:
         a = shortest_line(midpoint, exclusive_a.boundary)
-        a = pygeoops.extend_line_by_distance(a, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2)
+        if a is not None and not a.is_empty and a.length > HARD_SNAP_TOL:
+            a = pygeoops.extend_line_by_distance(
+                a, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2
+            )
+            transect_a.append(a)
 
         b = shortest_line(midpoint, exclusive_b.boundary)
-        b = pygeoops.extend_line_by_distance(b, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2)
-
-        transect_a.append(a)
-        transect_b.append(b)
+        if b is not None and not b.is_empty and b.length > HARD_SNAP_TOL:
+            b = pygeoops.extend_line_by_distance(
+                b, HARD_SNAP_TOL * 2, HARD_SNAP_TOL * 2
+            )
+            transect_b.append(b)
 
     # Assign pieces to sides based on their intersection with the transects
     pieces_a = []
@@ -221,12 +336,20 @@ def _assign_halves(
     unassigned = []
     for piece in pieces_list:
         if piece not in pieces_a and piece not in pieces_b:
-            if a_union.touches(piece) or a_union.overlaps(piece):
+            if a_union.intersects(piece) or a_union.touches(piece):
                 pieces_b.append(piece)
-            elif b_union.touches(piece) or b_union.overlaps(piece):
+            elif b_union.intersects(piece) or b_union.touches(piece):
                 pieces_a.append(piece)
             else:
-                unassigned.append(piece)
+                p_rep = piece.representative_point()
+                if p_rep.distance(exclusive_a) < p_rep.distance(exclusive_b):
+                    pieces_b.append(piece)
+                else:
+                    pieces_a.append(piece)
+
+    # Check if all pieces are assigned to only one side
+    if len(pieces_a) == 0 or len(pieces_b) == 0:
+        print("All pieces are assigned to only one side!!")
 
     return pieces_a, pieces_b, unassigned, midpoints, transect_a + transect_b
 
@@ -329,6 +452,7 @@ def _split_overlap(
             part = part.buffer(0)
         if part.is_empty:
             continue
+
         if min_area > 0.0 and part.area < min_area:
             if smallest_is_a:
                 a_parts.append(part)
@@ -337,12 +461,23 @@ def _split_overlap(
                 b_parts.append(part)
                 _append_split_piece(part_idx, "B", part)
             continue
-        pieces, line = _split_by_centerline(part, boundary_intersection)
+
+        pieces, line, raw_line = _split_by_centerline(part, boundary_intersection)
+
         if line is not None and not line.is_empty:
             centerlines.append(line)
+        if raw_line is not None and not raw_line.is_empty:
+            centerlines.append(raw_line)
+
         if len(pieces) < 2:
             for piece in pieces:
                 _append_split_piece(part_idx, "U", piece)
+                # if smallest_is_a:
+                #     a_parts.append(piece)
+                #     _append_split_piece(part_idx, "A", piece)
+                # else:
+                #     b_parts.append(piece)
+                #     _append_split_piece(part_idx, "B", piece)
             continue
         pieces_list = [piece for piece in pieces if not piece.is_empty]
         if not pieces_list:
@@ -354,6 +489,12 @@ def _split_overlap(
         if transect_assignment is None:
             for piece in pieces_list:
                 _append_split_piece(part_idx, "U", piece)
+                # if smallest_is_a:
+                #     a_parts.append(piece)
+                #     _append_split_piece(part_idx, "A", piece)
+                # else:
+                #     b_parts.append(piece)
+                #     _append_split_piece(part_idx, "B", piece)
             continue
 
         assigned_a, assigned_b, unassigned, new_midpoints, new_transects = (
@@ -367,6 +508,12 @@ def _split_overlap(
 
         for piece in unassigned:
             _append_split_piece(part_idx, "U", piece)
+            # if smallest_is_a:
+            #     a_parts.append(piece)
+            #     _append_split_piece(part_idx, "A", piece)
+            # else:
+            #     b_parts.append(piece)
+            #     _append_split_piece(part_idx, "B", piece)
         for piece in assigned_a:
             a_parts.append(piece)
             _append_split_piece(part_idx, "A", piece)
@@ -412,6 +559,33 @@ def _split_overlap(
         return new_a, new_b
 
     poly_a, poly_b = _apply_assignment(base_a, base_b, overlap_a, overlap_b)
+
+    # Print a warning if the results are multipolygons
+    if poly_a.geom_type == "MultiPolygon" or poly_b.geom_type == "MultiPolygon":
+        print(f"New polygons are multipolygons! pair_i: {pair_i}, pair_j: {pair_j}")
+
+    # Check if the results overlap
+    if poly_a.overlaps(poly_b):
+        intersection = poly_a.intersection(poly_b)
+        if (
+            intersection is not None
+            and not intersection.is_empty
+            and intersection.area > 1e-4
+        ):
+            print(
+                f"Overlap: pair_i: {pair_i}, pair_j: {pair_j} Area of overlap: {intersection.area}"
+            )
+            print(
+                f"    >>> Area of base: {base_a.area} ({base_a.area / base_a.area * 100}%), {base_b.area} ({base_b.area / base_b.area * 100}%)"
+            )
+            overlap_a_area = overlap_a.area if overlap_a is not None else 0
+            overlap_b_area = overlap_b.area if overlap_b is not None else 0
+            print(
+                f"    >>> overlap_a: {overlap_a_area} ({overlap_a_area / base_a.area * 100}%), overlap_b: {overlap_b_area} ({overlap_b_area / base_b.area * 100}%)"
+            )
+            print(
+                f"    >>> a_parts: {len(a_parts) if a_parts is not None else 0}, b_parts: {len(b_parts) if b_parts is not None else 0}"
+            )
 
     return (
         poly_a,
