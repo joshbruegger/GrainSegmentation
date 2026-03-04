@@ -4,7 +4,7 @@
 #SBATCH --mem=20GB
 #SBATCH --time=00:05:00
 
-source prepare_env.sh
+source src/SLURM/prepare_env.sh
 
 echo "Copying input files to fast local storage ($TMPDIR)..."
 WORK_DIR="$TMPDIR/blend_PPX_$SLURM_JOB_ID"

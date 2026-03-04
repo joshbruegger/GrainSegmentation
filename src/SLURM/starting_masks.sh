@@ -11,7 +11,7 @@ module load cuDNN/9.10.1.4-CUDA-12.8.0
 module load SciPy-bundle/2025.06-gfbf-2025a
 module list
 
-source prepare_env.sh
+source src/SLURM/prepare_env.sh
 
 
 INPUT_PATH="${1:-$SCRATCH/GrainSeg/dataset/MWD-1#121_s0c0.tif}"

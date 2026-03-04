@@ -12,7 +12,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 mkdir -p "$PROJECT_ROOT/logs"
 
-source prepare_env.sh
+source src/SLURM/prepare_env.sh
 
 # Paths can be overridden via environment variables
 IMAGE_DIR="${IMAGE_DIR:-$SCRATCH/GrainSeg/train/images}"
