@@ -2,27 +2,36 @@
 #SBATCH --job-name=crop_images
 #SBATCH --output=logs/crop_images-%j.log
 #SBATCH --time=00:10:00
+#SBATCH --mem=20GB
 
-source prepare_env.sh
+# === Configuration ===
+BBOX="5000, -10000, 57000, 0"
+IN_LABELS="labels_no_overlap.gpkg"
+OUT_LABELS="labels_cropped.gpkg"
+DATA_DIR="$SCRATCH/GrainSeg/dataset/MWD-1#121"
+SUFFIX=""
+# =====================
+
+source src/SLURM/prepare_env.sh
 
 echo "Copying input files to fast local storage ($TMPDIR)..."
 WORK_DIR="$TMPDIR/crop_images_$SLURM_JOB_ID"
 mkdir -p "$WORK_DIR"
 
-cp $SCRATCH/GrainSeg/dataset/MWD-1#121/labels_no_overlap.gpkg "$WORK_DIR/"
-cp $SCRATCH/GrainSeg/dataset/MWD-1#121/MWD-1#121_s0c*.tif "$WORK_DIR/"
+cp "$DATA_DIR/$IN_LABELS" "$WORK_DIR/"
+cp "$DATA_DIR/"*.tif "$WORK_DIR/"
 
 echo "Running cropping script on local storage..."
 uv run python -u src/preprocess/crop_images.py \
-    --vector "$WORK_DIR/labels_no_overlap.gpkg" \
-    --out-vector "$WORK_DIR/labels_cropped.gpkg" \
+    --vector "$WORK_DIR/$IN_LABELS" \
+    --out-vector "$WORK_DIR/$OUT_LABELS" \
     --image-dir "$WORK_DIR/" \
-    --sample MWD-1#121 \
-    --bbox "5000, -10000, 57000, 0"
+    --bbox "$BBOX" \
+    --suffix "$SUFFIX"
 
 echo "Copying result back to persistent storage..."
-cp "$WORK_DIR/labels_cropped.gpkg" $SCRATCH/GrainSeg/dataset/MWD-1#121/labels_cropped.gpkg
-mkdir -p $SCRATCH/GrainSeg/dataset/MWD-1#121/cropped
-cp -r "$WORK_DIR/cropped/"* $SCRATCH/GrainSeg/dataset/MWD-1#121/cropped/
+cp "$WORK_DIR/$OUT_LABELS" "$DATA_DIR/$OUT_LABELS"
+mkdir -p "$DATA_DIR/cropped"
+cp -r "$WORK_DIR/cropped/"* "$DATA_DIR/cropped/"
 
 echo "Done!"

@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -25,30 +25,6 @@ def _parse_bbox(value: str) -> Tuple[float, float, float, float]:
     if miny > maxy:
         miny, maxy = maxy, miny
     return minx, miny, maxx, maxy
-
-
-def _parse_channels(value: str) -> List[int]:
-    if not value:
-        return list(range(7))
-    items: List[int] = []
-    for token in value.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        if "-" in token:
-            bounds = token.split("-")
-            if len(bounds) != 2:
-                raise argparse.ArgumentTypeError(f"Invalid channel range: {token}")
-            start, end = (int(x.strip()) for x in bounds)
-            if start <= end:
-                items.extend(range(start, end + 1))
-            else:
-                items.extend(range(start, end - 1, -1))
-        else:
-            items.append(int(token))
-    if not items:
-        raise argparse.ArgumentTypeError("Channels list is empty")
-    return sorted(set(items))
 
 
 def _dedupe_consecutive(
@@ -328,9 +304,6 @@ def _read_tiff_crop(
 
 def _crop_images(
     image_dir: str,
-    sample: str,
-    channels: Iterable[int],
-    template: str,
     out_dir: str,
     suffix: str,
     pixel_window: Tuple[int, int, int, int],
@@ -338,16 +311,17 @@ def _crop_images(
     os.makedirs(out_dir, exist_ok=True)
     left, top, right, bottom = pixel_window
 
-    for channel in channels:
-        filename = template.format(sample=sample, channel=channel)
+    for filename in os.listdir(image_dir):
         input_path = os.path.join(image_dir, filename)
-        if not os.path.exists(input_path):
-            print(f"Warning: missing image {input_path}", file=sys.stderr)
+        if not os.path.isfile(input_path):
+            continue
+
+        ext = Path(filename).suffix.lower()
+        if ext not in (".tif", ".tiff", ".png", ".jpg", ".jpeg"):
             continue
 
         stem = Path(filename).stem
-        ext = Path(filename).suffix
-        output_name = f"{stem}{suffix}{ext}"
+        output_name = f"{stem}{suffix}{Path(filename).suffix}"
         output_path = os.path.join(out_dir, output_name)
 
         try:
@@ -366,20 +340,26 @@ def _crop_images(
                 f"Warning: TIFF read failed for {input_path}: {exc}",
                 file=sys.stderr,
             )
-            with Image.open(input_path) as img:
-                width, height = img.size
-                crop_left = max(0, left)
-                crop_top = max(0, top)
-                crop_right = min(width, right)
-                crop_bottom = min(height, bottom)
-                if crop_left >= crop_right or crop_top >= crop_bottom:
-                    print(
-                        f"Warning: crop outside image for {input_path}",
-                        file=sys.stderr,
+            try:
+                with Image.open(input_path) as img:
+                    width, height = img.size
+                    crop_left = max(0, left)
+                    crop_top = max(0, top)
+                    crop_right = min(width, right)
+                    crop_bottom = min(height, bottom)
+                    if crop_left >= crop_right or crop_top >= crop_bottom:
+                        print(
+                            f"Warning: crop outside image for {input_path}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    cropped_img = img.crop(
+                        (crop_left, crop_top, crop_right, crop_bottom)
                     )
-                    continue
-                cropped_img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
-                cropped_img.save(output_path)
+                    cropped_img.save(output_path)
+            except Exception as e:
+                print(f"Error reading image {input_path}: {e}", file=sys.stderr)
+                continue
 
         print(
             f"Saved {output_path} ({crop_right - crop_left}x{crop_bottom - crop_top})"
@@ -389,14 +369,13 @@ def _crop_images(
 def main() -> None:
     example = (
         "Example:\n"
-        "  python src/preprocess/crop_geojson_images.py \\\n"
+        "  python src/preprocess/crop_images.py \\\n"
         "    --geojson /scratch/s4361687/GrainSeg/dataset/MWD-1#121/tempData.geojson \\\n"
         "    --out-geojson /scratch/s4361687/GrainSeg/dataset/MWD-1#121/tempData_crop.geojson \\\n"
-        "    --image-dir /scratch/s4361687/GrainSeg/dataset \\\n"
-        "    --sample MWD-1#121\n"
+        "    --image-dir /scratch/s4361687/GrainSeg/dataset\n"
     )
     parser = argparse.ArgumentParser(
-        description="Crop GeoJSON polygons and s0c0..s0c6 TIFF images to a bbox.",
+        description="Crop GeoJSON polygons and images to a bbox.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=example,
     )
@@ -418,19 +397,7 @@ def main() -> None:
         default="0,-5000,35000,0",
         help="GeoJSON bbox minx,miny,maxx,maxy",
     )
-    parser.add_argument("--image-dir", help="Directory of input TIFFs")
-    parser.add_argument("--sample", help="Sample name, e.g. MWD-1#121")
-    parser.add_argument(
-        "--channels",
-        type=_parse_channels,
-        default="0-6",
-        help="Channels list, e.g. 0-6 or 0,1,2",
-    )
-    parser.add_argument(
-        "--image-template",
-        default="{sample}_s0c{channel}.tif",
-        help="Filename template for images",
-    )
+    parser.add_argument("--image-dir", help="Directory of input images")
     parser.add_argument(
         "--out-image-dir",
         default=None,
@@ -441,17 +408,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not (args.geojson and args.out_geojson) and not (args.image_dir and args.sample):
+    if not (args.geojson and args.out_geojson) and not args.image_dir:
         parser.error(
             "Must provide either vector arguments (--geojson, --out-geojson) or "
-            "image arguments (--image-dir, --sample), or both."
+            "image arguments (--image-dir), or both."
         )
 
     if bool(args.geojson) != bool(args.out_geojson):
         parser.error("Both --geojson and --out-geojson must be provided together.")
-
-    if bool(args.image_dir) != bool(args.sample):
-        parser.error("Both --image-dir and --sample must be provided together.")
 
     bbox = args.bbox
 
@@ -492,14 +456,11 @@ def main() -> None:
                 json.dump(shifted, f, indent=2)
             print(f"Wrote GeoJSON: {out_path}")
 
-    if args.image_dir and args.sample:
+    if args.image_dir:
         out_image_dir = args.out_image_dir or os.path.join(args.image_dir, "cropped")
         pixel_window = _bbox_geojson_to_pixel(bbox)
         _crop_images(
             image_dir=args.image_dir,
-            sample=args.sample,
-            channels=args.channels,
-            template=args.image_template,
             out_dir=out_image_dir,
             suffix=args.suffix,
             pixel_window=pixel_window,
