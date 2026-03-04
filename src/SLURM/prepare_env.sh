@@ -6,9 +6,8 @@ module list
 
 export PATH="$HOME/.local/bin:$PATH"
 
-if [ ! -d "$PROJECT_ROOT/.venv" ]; then
-    (cd "$PROJECT_ROOT" && uv venv --system-site-packages)
+if [ ! -d ".venv" ]; then
+    uv venv --system-site-packages
 fi
 
-cd "$PROJECT_ROOT"
 uv sync

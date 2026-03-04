@@ -15,8 +15,8 @@ mkdir -p "$PROJECT_ROOT/logs"
 source src/SLURM/prepare_env.sh
 
 # Paths can be overridden via environment variables
-IMAGE_DIR="${IMAGE_DIR:-$SCRATCH/GrainSeg/train/images}"
-MASK_DIR="${MASK_DIR:-$SCRATCH/GrainSeg/train/masks}"
+IMAGE_DIR="${IMAGE_DIR:-$SCRATCH/GrainSeg/dataset/train/images}"
+MASK_DIR="${MASK_DIR:-$SCRATCH/GrainSeg/dataset/train/masks}"
 CHECKPOINT="${CHECKPOINT:-}"
 RESUME="${RESUME:-}"
 OUTPUT_MODEL="${OUTPUT_MODEL:-$SCRATCH/GrainSeg/models/unet_7in_finetuned.keras}"
