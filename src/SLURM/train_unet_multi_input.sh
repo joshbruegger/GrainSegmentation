@@ -33,9 +33,18 @@ SPATIAL_SPLIT="${SPATIAL_SPLIT:-}"
 SPLIT_TILE_SIZE="${SPLIT_TILE_SIZE:-}"
 SPLIT_COVERAGE_BINS="${SPLIT_COVERAGE_BINS:-}"
 
+echo "Copying training data to fast local storage ($TMPDIR)..."
+WORK_DIR="$TMPDIR/train_unet_$SLURM_JOB_ID"
+mkdir -p "$WORK_DIR"
+cp -r "$IMAGE_DIR" "$WORK_DIR/images"
+cp -r "$MASK_DIR" "$WORK_DIR/masks"
+
+LOCAL_IMAGE_DIR="$WORK_DIR/images"
+LOCAL_MASK_DIR="$WORK_DIR/masks"
+
 CMD=(uv run python -u src/train_unet_multi_input.py
-    --image-dir "$IMAGE_DIR"
-    --mask-dir "$MASK_DIR"
+    --image-dir "$LOCAL_IMAGE_DIR"
+    --mask-dir "$LOCAL_MASK_DIR"
     --output-model "$OUTPUT_MODEL"
     --patch-size "$PATCH_SIZE"
     --stride "$STRIDE"

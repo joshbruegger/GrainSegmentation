@@ -18,17 +18,33 @@ INPUT_PATH="${1:-$SCRATCH/GrainSeg/dataset/MWD-1#121_s0c0.tif}"
 INPUT_NAME="$(basename "$INPUT_PATH")"
 INPUT_STEM="${INPUT_NAME%.*}"
 
+echo "Copying input files to fast local storage ($TMPDIR)..."
+WORK_DIR="$TMPDIR/starting_masks_$SLURM_JOB_ID"
+mkdir -p "$WORK_DIR/out"
+
+cp "$INPUT_PATH" "$WORK_DIR/"
+
+echo "Running starting masks script on local storage..."
 uv run python -u src/starting_masks.py \
-    --input "$INPUT_PATH" \
-    --output "$SCRATCH/GrainSeg/out" \
+    --input "$WORK_DIR/$INPUT_NAME" \
+    --output "$WORK_DIR/out" \
     --tile-size 6144 \
     --visualize-probability 0 \
     --nms-thresh 0.3 \
     --max-mask-coverage 0.5 \
-    --load-mask-cache
+    --load-mask-cache \
+    --mask-cache-dir "$SCRATCH/GrainSeg/out"
     # --save-mask-cache
 
 
+echo "Running polygon conversion on local storage..."
 uv run python -u src/convert_rle_polygon.py rle2json \
-    -i "$SCRATCH/GrainSeg/out/${INPUT_STEM}.json" \
-    -o "$SCRATCH/GrainSeg/out/${INPUT_STEM}.geojson"
+    -i "$WORK_DIR/out/${INPUT_STEM}.json" \
+    -o "$WORK_DIR/out/${INPUT_STEM}.geojson"
+
+echo "Copying results back to persistent storage..."
+mkdir -p "$SCRATCH/GrainSeg/out"
+cp "$WORK_DIR/out/${INPUT_STEM}.json" "$SCRATCH/GrainSeg/out/"
+cp "$WORK_DIR/out/${INPUT_STEM}.geojson" "$SCRATCH/GrainSeg/out/"
+
+echo "Done!"
