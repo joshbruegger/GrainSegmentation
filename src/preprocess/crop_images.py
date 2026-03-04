@@ -404,14 +404,12 @@ def main() -> None:
         "--geojson",
         "--vector",
         dest="geojson",
-        required=True,
         help="Input vector file path (GeoJSON or GPKG)",
     )
     parser.add_argument(
         "--out-geojson",
         "--out-vector",
         dest="out_geojson",
-        required=True,
         help="Output vector file path (GeoJSON or GPKG)",
     )
     parser.add_argument(
@@ -420,8 +418,8 @@ def main() -> None:
         default="0,-5000,35000,0",
         help="GeoJSON bbox minx,miny,maxx,maxy",
     )
-    parser.add_argument("--image-dir", required=True, help="Directory of input TIFFs")
-    parser.add_argument("--sample", required=True, help="Sample name, e.g. MWD-1#121")
+    parser.add_argument("--image-dir", help="Directory of input TIFFs")
+    parser.add_argument("--sample", help="Sample name, e.g. MWD-1#121")
     parser.add_argument(
         "--channels",
         type=_parse_channels,
@@ -443,52 +441,69 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if not (args.geojson and args.out_geojson) and not (args.image_dir and args.sample):
+        parser.error(
+            "Must provide either vector arguments (--geojson, --out-geojson) or "
+            "image arguments (--image-dir, --sample), or both."
+        )
+
+    if bool(args.geojson) != bool(args.out_geojson):
+        parser.error("Both --geojson and --out-geojson must be provided together.")
+
+    if bool(args.image_dir) != bool(args.sample):
+        parser.error("Both --image-dir and --sample must be provided together.")
+
     bbox = args.bbox
-    in_path = args.geojson
-    out_path = args.out_geojson
 
-    is_gpkg = in_path.endswith(".gpkg") or out_path.endswith(".gpkg")
+    if args.geojson and args.out_geojson:
+        in_path = args.geojson
+        out_path = args.out_geojson
 
-    if is_gpkg:
-        import geopandas as gpd
-        from shapely.geometry import box
+        is_gpkg = in_path.endswith(".gpkg") or out_path.endswith(".gpkg")
 
-        print(f"Reading vector file {in_path} with geopandas...")
-        gdf = gpd.read_file(in_path)
-        minx, miny, maxx, maxy = bbox
-        clip_box = box(minx, miny, maxx, maxy)
+        if is_gpkg:
+            import geopandas as gpd
+            from shapely.geometry import box
 
-        print(f"Clipping to bbox {bbox}...")
-        clipped_gdf = gpd.clip(gdf, clip_box)
+            print(f"Reading vector file {in_path} with geopandas...")
+            gdf = gpd.read_file(in_path)
+            minx, miny, maxx, maxy = bbox
+            clip_box = box(minx, miny, maxx, maxy)
 
-        print(f"Shifting coordinates by x={-minx}, y={-maxy}...")
-        clipped_gdf.geometry = clipped_gdf.geometry.translate(xoff=-minx, yoff=-maxy)
+            print(f"Clipping to bbox {bbox}...")
+            clipped_gdf = gpd.clip(gdf, clip_box)
 
-        driver = "GPKG" if out_path.endswith(".gpkg") else "GeoJSON"
-        clipped_gdf.to_file(out_path, driver=driver)
-        print(f"Wrote vector data: {out_path}")
-    else:
-        with open(in_path, "r") as f:
-            data = json.load(f)
-        minx, miny, maxx, maxy = bbox
-        clipped = _clip_geojson(data, bbox)
-        print(f"Shifting coordinates by x={-minx}, y={-maxy}...")
-        shifted = _shift_geojson(clipped, -minx, -maxy)
-        with open(out_path, "w") as f:
-            json.dump(shifted, f, indent=2)
-        print(f"Wrote GeoJSON: {out_path}")
+            print(f"Shifting coordinates by x={-minx}, y={-maxy}...")
+            clipped_gdf.geometry = clipped_gdf.geometry.translate(
+                xoff=-minx, yoff=-maxy
+            )
 
-    out_image_dir = args.out_image_dir or os.path.join(args.image_dir, "cropped")
-    pixel_window = _bbox_geojson_to_pixel(bbox)
-    _crop_images(
-        image_dir=args.image_dir,
-        sample=args.sample,
-        channels=args.channels,
-        template=args.image_template,
-        out_dir=out_image_dir,
-        suffix=args.suffix,
-        pixel_window=pixel_window,
-    )
+            driver = "GPKG" if out_path.endswith(".gpkg") else "GeoJSON"
+            clipped_gdf.to_file(out_path, driver=driver)
+            print(f"Wrote vector data: {out_path}")
+        else:
+            with open(in_path, "r") as f:
+                data = json.load(f)
+            minx, miny, maxx, maxy = bbox
+            clipped = _clip_geojson(data, bbox)
+            print(f"Shifting coordinates by x={-minx}, y={-maxy}...")
+            shifted = _shift_geojson(clipped, -minx, -maxy)
+            with open(out_path, "w") as f:
+                json.dump(shifted, f, indent=2)
+            print(f"Wrote GeoJSON: {out_path}")
+
+    if args.image_dir and args.sample:
+        out_image_dir = args.out_image_dir or os.path.join(args.image_dir, "cropped")
+        pixel_window = _bbox_geojson_to_pixel(bbox)
+        _crop_images(
+            image_dir=args.image_dir,
+            sample=args.sample,
+            channels=args.channels,
+            template=args.image_template,
+            out_dir=out_image_dir,
+            suffix=args.suffix,
+            pixel_window=pixel_window,
+        )
 
 
 if __name__ == "__main__":
