@@ -471,13 +471,12 @@ def _split_overlap(
 
         if len(pieces) < 2:
             for piece in pieces:
-                _append_split_piece(part_idx, "U", piece)
-                # if smallest_is_a:
-                #     a_parts.append(piece)
-                #     _append_split_piece(part_idx, "A", piece)
-                # else:
-                #     b_parts.append(piece)
-                #     _append_split_piece(part_idx, "B", piece)
+                if smallest_is_a:
+                    a_parts.append(piece)
+                    _append_split_piece(part_idx, "A", piece)
+                else:
+                    b_parts.append(piece)
+                    _append_split_piece(part_idx, "B", piece)
             continue
         pieces_list = [piece for piece in pieces if not piece.is_empty]
         if not pieces_list:
@@ -488,13 +487,12 @@ def _split_overlap(
 
         if transect_assignment is None:
             for piece in pieces_list:
-                _append_split_piece(part_idx, "U", piece)
-                # if smallest_is_a:
-                #     a_parts.append(piece)
-                #     _append_split_piece(part_idx, "A", piece)
-                # else:
-                #     b_parts.append(piece)
-                #     _append_split_piece(part_idx, "B", piece)
+                if smallest_is_a:
+                    a_parts.append(piece)
+                    _append_split_piece(part_idx, "A", piece)
+                else:
+                    b_parts.append(piece)
+                    _append_split_piece(part_idx, "B", piece)
             continue
 
         assigned_a, assigned_b, unassigned, new_midpoints, new_transects = (
@@ -507,13 +505,12 @@ def _split_overlap(
             transects.extend(new_transects)
 
         for piece in unassigned:
-            _append_split_piece(part_idx, "U", piece)
-            # if smallest_is_a:
-            #     a_parts.append(piece)
-            #     _append_split_piece(part_idx, "A", piece)
-            # else:
-            #     b_parts.append(piece)
-            #     _append_split_piece(part_idx, "B", piece)
+            if smallest_is_a:
+                a_parts.append(piece)
+                _append_split_piece(part_idx, "A", piece)
+            else:
+                b_parts.append(piece)
+                _append_split_piece(part_idx, "B", piece)
         for piece in assigned_a:
             a_parts.append(piece)
             _append_split_piece(part_idx, "A", piece)

@@ -4,4 +4,4 @@ notes.md
 .github/
 .vscode/
 logs/
-.cursor/
+*.gpkg
