@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=GrainSegTrain
-#SBATCH --output=logs/unet-train-%j.log
+#SBATCH --output=logs/%x-%j.log
 #SBATCH --mem=256G
 #SBATCH --gpus-per-node=rtx_pro_6000:1
 #SBATCH --time=00:10:00
@@ -35,7 +35,7 @@ while getopts ":n:s:r:o:h" opt; do
     esac
 done
 
-source src/SLURM/prepare_env.sh
+source SLURM/prepare_env.sh
 
 if [ -z "$OUTPUT_MODEL" ]; then
     OUTPUT_MODEL="$SCRATCH/GrainSeg/models/unet_finetuned_${RUN_NAME}.keras"
@@ -51,12 +51,12 @@ LOCAL_DIR="$TMPDIR/dataset/cropped"
 export TF_CPP_MIN_LOG_LEVEL=2
 
 echo "Running training..."
-uv run --no-sync python -u src/train_unet_multi_input.py \
+cd pipelines/training && uv run --no-sync python -u src/train_unet_multi_input.py \
     --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
     --tuning-dir "$TMPDIR/tuning" \
     --image-dir "$LOCAL_DIR" \
     --mask-dir "$LOCAL_DIR" \
-    --checkpoint models/pretrained/starting_point.keras \
+    --checkpoint ../../models/pretrained/starting_point.keras \
     --output-model "$OUTPUT_MODEL" \
     --patch-size 3008 \
     --patch-overlap 0.5 \

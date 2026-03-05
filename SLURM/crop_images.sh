@@ -12,7 +12,7 @@ DATA_DIR="$SCRATCH/GrainSeg/dataset/MWD-1#121"
 SUFFIX=""
 # =====================
 
-source src/SLURM/prepare_env.sh
+source SLURM/prepare_env.sh
 
 echo "Copying input files to fast local storage ($TMPDIR)..."
 WORK_DIR="$TMPDIR/crop_images_$SLURM_JOB_ID"
@@ -22,7 +22,7 @@ cp "$DATA_DIR/$IN_LABELS" "$WORK_DIR/"
 cp "$DATA_DIR/"*.tif "$WORK_DIR/"
 
 echo "Running cropping script on local storage..."
-uv run python -u src/preprocess/crop_images.py \
+cd pipelines/data_prep && uv run python -u src/crop_images.py \
     --vector "$WORK_DIR/$IN_LABELS" \
     --out-vector "$WORK_DIR/$OUT_LABELS" \
     --image-dir "$WORK_DIR/" \

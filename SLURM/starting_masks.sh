@@ -11,7 +11,7 @@ module load cuDNN/9.10.1.4-CUDA-12.8.0
 module load SciPy-bundle/2025.06-gfbf-2025a
 module list
 
-source src/SLURM/prepare_env.sh
+source SLURM/prepare_env.sh
 
 
 INPUT_PATH="${1:-$SCRATCH/GrainSeg/dataset/MWD-1#121_s0c0.tif}"
@@ -25,7 +25,7 @@ mkdir -p "$WORK_DIR/out"
 cp "$INPUT_PATH" "$WORK_DIR/"
 
 echo "Running starting masks script on local storage..."
-uv run python -u src/starting_masks.py \
+cd pipelines/data_prep && uv run python -u src/starting_masks.py \
     --input "$WORK_DIR/$INPUT_NAME" \
     --output "$WORK_DIR/out" \
     --tile-size 6144 \

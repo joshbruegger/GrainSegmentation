@@ -4,7 +4,7 @@
 #SBATCH --mem=20GB
 #SBATCH --time=00:05:00
 
-source src/SLURM/prepare_env.sh
+source SLURM/prepare_env.sh
 
 echo "Copying input files to fast local storage ($TMPDIR)..."
 WORK_DIR="$TMPDIR/blend_PPX_$SLURM_JOB_ID"
@@ -14,7 +14,7 @@ mkdir -p "$WORK_DIR/cropped"
 cp -r $SCRATCH/GrainSeg/dataset/MWD-1#121/cropped/* "$WORK_DIR/cropped/"
 
 echo "Running blending script on local storage..."
-uv run python -u src/preprocess/blend_tiffs.py \
+cd pipelines/data_prep && uv run python -u src/blend_tiffs.py \
     "$WORK_DIR/cropped/" \
     "$WORK_DIR/PPX_blended.tif" \
     --exclude "$WORK_DIR/cropped/PPL_crop.tif"

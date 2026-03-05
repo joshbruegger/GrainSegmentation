@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 
-source src/SLURM/prepare_env.sh
+source SLURM/prepare_env.sh
 
 echo "Copying input files to fast local storage ($TMPDIR)..."
 WORK_DIR="$TMPDIR/split_overlaps_$SLURM_JOB_ID"
@@ -17,14 +17,14 @@ cp $SCRATCH/GrainSeg/dataset/MWD-1#121/labels_raw.gpkg "$WORK_DIR/"
 cp $SCRATCH/GrainSeg/dataset/MWD-1#121/MWD-1#121_s0c*.tif "$WORK_DIR/"
 
 echo "Running split overlaps script on local storage..."
-uv run python -u src/preprocess/split_overlaps.py \
+cd pipelines/data_prep && uv run python -u src/split_overlaps.py \
     --input "$WORK_DIR/labels_raw.gpkg" \
     --output "$WORK_DIR/labels_no_overlap.gpkg" \
     --min-area 300 \
     --workers 10
 
 echo "Running cropping script on local storage..."
-uv run python -u src/preprocess/crop_images.py \
+uv run python -u src/crop_images.py \
     --vector "$WORK_DIR/labels_no_overlap.gpkg" \
     --out-vector "$WORK_DIR/labels_cropped.gpkg" \
     --image-dir "$WORK_DIR/" \

@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-source src/SLURM/prepare_env.sh
+source SLURM/prepare_env.sh
 
 # Inputs and outputs can be overridden via environment variables
 INPUT_GPKG="${INPUT_GPKG:-$SCRATCH/GrainSeg/dataset/MWD-1#121/labels_cropped.gpkg}"
@@ -32,7 +32,7 @@ OUTPUT_RASTER_NAME="$(basename "$OUTPUT_RASTER")"
 cp "$INPUT_GPKG" "$WORK_DIR/"
 cp "$REFERENCE_TIFF" "$WORK_DIR/"
 
-CMD=(uv run python -u src/preprocess/gpkg_to_raster.py
+CMD=(uv run --directory pipelines/data_prep python -u src/gpkg_to_raster.py
     --input "$WORK_DIR/$INPUT_GPKG_NAME"
     --reference "$WORK_DIR/$REFERENCE_TIFF_NAME"
     --output "$WORK_DIR/$OUTPUT_RASTER_NAME"
