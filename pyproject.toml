@@ -24,6 +24,7 @@ dependencies = [
     "keras-tuner>=1.4.8",
     "scipy>=1.17.1",
     "scikit-learn>=1.8.0",
+    "tensorflow>=2.20.0",
 ]
 
 [tool.semantic_release]

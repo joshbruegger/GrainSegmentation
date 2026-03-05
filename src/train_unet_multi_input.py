@@ -33,10 +33,20 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Percentage to overlap patches (0 to 1)",
     )
-    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--img1-suffix", default="_img1")
-    parser.add_argument("--img-suffix-template", default="_img{index}")
+    parser.add_argument(
+        "--tune-epochs", type=int, default=20, help="Max epochs per tuning trial"
+    )
+    parser.add_argument(
+        "--run-name",
+        default="default_run",
+        help="Name of the run, used to separate tuning directories.",
+    )
+    parser.add_argument(
+        "--image-suffixes",
+        default="_PPL,_PPX1,_PPX2,_PPX3,_PPX4,_PPX5,_PPX6",
+        help="Comma-separated list of image suffixes to load",
+    )
     parser.add_argument(
         "--mask-ext",
         default=None,
@@ -112,15 +122,15 @@ def main() -> None:
         output_model_path=args.output_model,
         patch_size=args.patch_size,
         stride=stride,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        img1_suffix=args.img1_suffix,
-        img_suffix_template=args.img_suffix_template,
+        tune_epochs=args.tune_epochs,
+        final_epochs=args.epochs,
+        image_suffixes=[s.strip() for s in args.image_suffixes.split(",")],
         mask_ext=args.mask_ext,
         mask_stem_suffix=args.mask_stem_suffix,
         split_tile_size=split_tile_size,
         split_coverage_bins=args.split_coverage_bins,
         num_inputs=args.num_inputs,
+        run_name=args.run_name,
         n_splits=args.folds,
         random_state=args.seed,
         use_mixed_precision=not args.no_mixed_precision,

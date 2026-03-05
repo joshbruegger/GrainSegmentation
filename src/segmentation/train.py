@@ -15,26 +15,29 @@ class CVTuner(kt.BayesianOptimization):
         cv_folds,
         patch_size,
         stride,
-        batch_size,
         epochs,
         num_inputs,
         **kwargs,
     ):
+        hp_batch_size = trial.hyperparameters.Choice(
+            "batch_size", [1, 2, 4, 8, 16, 32, 64, 128]
+        )
+
         val_losses = []
         for i, (train_samples, val_samples) in enumerate(cv_folds):
             train_dataset = build_dataset(
                 train_samples,
                 patch_size=patch_size,
                 stride=stride,
-                batch_size=batch_size,
+                batch_size=hp_batch_size,
                 augment=True,
                 num_inputs=num_inputs,
             )
             val_dataset = build_dataset(
                 val_samples,
                 patch_size=patch_size,
-                stride=stride,
-                batch_size=batch_size,
+                stride=patch_size,  # Validation stride = patch_size for 0% overlap
+                batch_size=hp_batch_size,
                 augment=False,
                 num_inputs=num_inputs,
             )
@@ -52,8 +55,18 @@ class CVTuner(kt.BayesianOptimization):
                 optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
             )
 
+            early_stopping = tf.keras.callbacks.EarlyStopping(
+                monitor="val_loss",
+                patience=4,
+                restore_best_weights=True,
+            )
+
             history = model.fit(
-                train_dataset, validation_data=val_dataset, epochs=epochs, verbose=1
+                train_dataset,
+                validation_data=val_dataset,
+                epochs=epochs,
+                callbacks=[early_stopping],
+                verbose=1,
             )
             val_losses.append(min(history.history["val_loss"]))
 
@@ -68,15 +81,15 @@ def train_model(
     output_model_path: str,
     patch_size: int,
     stride: int,
-    batch_size: int,
-    epochs: int,
-    img1_suffix: str,
-    img_suffix_template: str,
+    tune_epochs: int,
+    final_epochs: int,
+    image_suffixes: list[str],
     mask_ext: str | None,
     mask_stem_suffix: str,
     split_tile_size: int,
     split_coverage_bins: int,
     num_inputs: int,
+    run_name: str,
     n_splits: int,
     random_state: int,
     use_mixed_precision: bool,
@@ -88,8 +101,7 @@ def train_model(
     samples = list_samples(
         image_dir=image_dir,
         mask_dir=mask_dir,
-        img1_suffix=img1_suffix,
-        img_suffix_template=img_suffix_template,
+        image_suffixes=image_suffixes,
         mask_ext=mask_ext,
         mask_stem_suffix=mask_stem_suffix,
         num_inputs=num_inputs,
@@ -109,7 +121,7 @@ def train_model(
         ),
         objective="val_loss",
         max_trials=max_trials,
-        directory="tuning_dir",
+        directory=f"tuning_dir_{run_name}_{num_inputs}in",
         project_name="unet_tuning",
         overwrite=True,
     )
@@ -118,13 +130,14 @@ def train_model(
         cv_folds=cv_folds,
         patch_size=patch_size,
         stride=stride,
-        batch_size=batch_size,
-        epochs=epochs,
+        epochs=tune_epochs,
         num_inputs=num_inputs,
     )
 
     best_hp = tuner.get_best_hyperparameters()[0]
     print(f"Best hyperparameters: {best_hp.values}")
+
+    best_batch_size = best_hp.get("batch_size")
 
     all_train_samples = []
     for _, val_samples in cv_folds:
@@ -134,7 +147,7 @@ def train_model(
         all_train_samples,
         patch_size=patch_size,
         stride=stride,
-        batch_size=batch_size,
+        batch_size=best_batch_size,
         augment=True,
         num_inputs=num_inputs,
     )
@@ -147,7 +160,20 @@ def train_model(
     final_model.compile(
         optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
     )
-    final_model.fit(full_dataset, epochs=epochs)
+
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1
+    )
+    checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        filepath=output_model_path.replace(".keras", "_best.keras"),
+        monitor="loss",
+        save_best_only=True,
+        verbose=1,
+    )
+
+    final_model.fit(
+        full_dataset, epochs=final_epochs, callbacks=[reduce_lr, checkpoint]
+    )
 
     final_model.save(output_model_path)
     return final_model

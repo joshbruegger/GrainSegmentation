@@ -5,8 +5,9 @@ from typing import Any, Dict, Iterable, List, Tuple
 import numpy as np
 from PIL import Image
 from scipy.ndimage import rotate, shift
-from sklearn.model_selection import train_test_split
 import tensorflow as tf
+
+Image.MAX_IMAGE_PIXELS = None
 
 
 def _pad_to_patch(
@@ -38,37 +39,46 @@ def _compute_starts(size: int, patch_size: int, stride: int) -> List[int]:
     return starts
 
 
-def _augment_sample(
-    images: List[np.ndarray], label: np.ndarray
-) -> Tuple[List[np.ndarray], np.ndarray]:
-    if np.random.rand() < 0.5:
-        images = [np.fliplr(img) for img in images]
-        label = np.fliplr(label)
-    if np.random.rand() < 0.5:
-        images = [np.flipud(img) for img in images]
-        label = np.flipud(label)
+def _tf_augment(
+    inputs: Tuple[tf.Tensor, ...], label: tf.Tensor
+) -> Tuple[Tuple[tf.Tensor, ...], tf.Tensor]:
+    num_inputs = len(inputs)
+    # Concatenate all inputs and label along channel axis to apply same spatial transforms
+    concat = tf.concat(list(inputs) + [label], axis=-1)
 
-    # Continuous rotation
-    if np.random.rand() < 0.5:
-        angle = np.random.uniform(0, 360)
-        images = [rotate(img, angle, axes=(0, 1), reshape=False, order=1, mode='reflect') for img in images]
-        label = rotate(label, angle, axes=(0, 1), reshape=False, order=0, mode='reflect')
+    seed_lr = tf.random.uniform(shape=[], minval=0.0, maxval=1.0)
+    concat = tf.cond(
+        seed_lr < 0.5, lambda: tf.image.flip_left_right(concat), lambda: concat
+    )
 
-    # Translation
-    if np.random.rand() < 0.5:
-        shift_y = np.random.uniform(-0.1, 0.1) * label.shape[0]
-        shift_x = np.random.uniform(-0.1, 0.1) * label.shape[1]
-        images = [shift(img, (shift_y, shift_x, 0), order=1, mode='reflect') for img in images]
-        label = shift(label, (shift_y, shift_x), order=0, mode='reflect')
+    seed_ud = tf.random.uniform(shape=[], minval=0.0, maxval=1.0)
+    concat = tf.cond(
+        seed_ud < 0.5, lambda: tf.image.flip_up_down(concat), lambda: concat
+    )
 
-    delta = np.random.uniform(-0.2, 0.2)
-    contrast = np.random.uniform(0.8, 1.2)
-    augmented = []
-    for img in images:
-        img = np.clip(img + delta, 0.0, 1.0)
-        img = np.clip((img - 0.5) * contrast + 0.5, 0.0, 1.0)
-        augmented.append(img)
-    return augmented, label
+    # Random 90-degree rotations
+    k = tf.random.uniform(shape=[], minval=0, maxval=4, dtype=tf.int32)
+    concat = tf.image.rot90(concat, k=k)
+
+    # Split back
+    split_sizes = [3] * num_inputs + [3]
+    splits = tf.split(concat, split_sizes, axis=-1)
+
+    aug_inputs = list(splits[:-1])
+    aug_label = splits[-1]
+
+    # Color augmentations on images only
+    final_inputs = []
+    for img in aug_inputs:
+        img = tf.image.random_brightness(img, max_delta=0.2)
+        img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
+
+        # Explicit clipping matching the original checkpoint code
+        img = tf.where(img < 0.0, tf.zeros_like(img), img)
+        img = tf.where(img > 1.0, tf.ones_like(img), img)
+        final_inputs.append(img)
+
+    return tuple(final_inputs), aug_label
 
 
 def _load_rgb_image(path: str) -> np.ndarray:
@@ -90,12 +100,15 @@ def _load_raster_mask(path: str) -> np.ndarray:
 def list_samples(
     image_dir: str,
     mask_dir: str,
-    img1_suffix: str,
-    img_suffix_template: str,
+    image_suffixes: List[str],
     mask_ext: str | None,
     mask_stem_suffix: str,
     num_inputs: int,
 ) -> List[Dict[str, Any]]:
+    if not image_suffixes:
+        raise ValueError("image_suffixes must not be empty")
+
+    img1_suffix = image_suffixes[0]
     img1_pattern = os.path.join(image_dir, f"*{img1_suffix}.*")
     img1_paths = sorted(glob(img1_pattern))
     if not img1_paths:
@@ -105,15 +118,16 @@ def list_samples(
     for img1_path in img1_paths:
         base_name = os.path.basename(img1_path)
         stem, _ = os.path.splitext(base_name)
-        if img1_suffix not in stem:
+        if not stem.endswith(img1_suffix):
             continue
-        base_stem = stem.replace(img1_suffix, "")
+        base_stem = stem[: -len(img1_suffix)]
         image_paths = []
-        for idx in range(1, num_inputs + 1):
-            suffix = img_suffix_template.format(index=idx)
+        for idx, suffix in enumerate(image_suffixes[:num_inputs]):
             img_path = img1_path.replace(img1_suffix, suffix)
             if not os.path.exists(img_path):
-                raise FileNotFoundError(f"Missing image for input {idx}: {img_path}")
+                raise FileNotFoundError(
+                    f"Missing image for input {idx + 1} ({suffix}): {img_path}"
+                )
             image_paths.append(img_path)
 
         sample = {"images": image_paths, "id": base_stem}
@@ -135,6 +149,18 @@ def list_samples(
 
         samples.append(sample)
     return samples
+
+
+def _grid_regions(
+    height: int, width: int, tile_size: int
+) -> List[Tuple[int, int, int, int]]:
+    regions = []
+    for y0 in range(0, height, tile_size):
+        for x0 in range(0, width, tile_size):
+            y1 = min(y0 + tile_size, height)
+            x1 = min(x0 + tile_size, width)
+            regions.append((y0, y1, x0, x1))
+    return regions
 
 
 def create_spatial_cv_folds(
@@ -161,14 +187,14 @@ def create_spatial_cv_folds(
         for y0, y1, x0, x1 in regions:
             cov = float(np.mean(mask[y0:y1, x0:x1] > 0))
             coverages.append(cov)
-            
+
             region_sample = dict(sample)
             region_sample["region"] = (y0, y1, x0, x1)
             region_samples.append(region_sample)
 
     coverages_arr = np.array(coverages, dtype=np.float32)
     total = coverages_arr.shape[0]
-    
+
     if total < n_splits:
         raise ValueError(f"Not enough regions ({total}) for {n_splits} splits.")
 
@@ -192,7 +218,7 @@ def create_spatial_cv_folds(
         train_samples_fold = [region_samples[i] for i in train_idx]
         val_samples_fold = [region_samples[i] for i in val_idx]
         folds.append((train_samples_fold, val_samples_fold))
-        
+
     return folds
 
 
@@ -200,7 +226,6 @@ def _sample_patch_generator(
     samples: Iterable[Dict[str, Any]],
     patch_size: int,
     stride: int,
-    augment: bool,
     num_inputs: int,
 ) -> Iterable[Tuple[Tuple[np.ndarray, ...], np.ndarray]]:
     if patch_size <= 0 or stride <= 0:
@@ -240,11 +265,6 @@ def _sample_patch_generator(
                 ]
                 patch_label = label[y : y + patch_size, x : x + patch_size]
 
-                if augment:
-                    patch_images, patch_label = _augment_sample(
-                        patch_images, patch_label
-                    )
-
                 one_hot = np.eye(3, dtype=np.float32)[patch_label]
                 yield tuple(patch_images[:num_inputs]), one_hot
 
@@ -264,12 +284,19 @@ def build_dataset(
     )
 
     dataset = tf.data.Dataset.from_generator(
-        lambda: _sample_patch_generator(
-            samples, patch_size, stride, augment, num_inputs
-        ),
+        lambda: _sample_patch_generator(samples, patch_size, stride, num_inputs),
         output_signature=output_signature,
     )
+
+    # Cache the un-augmented patches in memory or fast disk
+    # This prevents re-reading images and extracting patches every epoch
+    dataset = dataset.cache()
+
     if augment:
+        dataset = dataset.map(
+            _tf_augment, num_parallel_calls=tf.data.AUTOTUNE, deterministic=False
+        )
         dataset = dataset.shuffle(buffer_size=100)
+
     dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return dataset
