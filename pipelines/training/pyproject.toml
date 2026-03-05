@@ -1,0 +1,15 @@
+[project]
+name = "training-pipeline"
+version = "0.1.0"
+description = "Training pipeline for GrainSegmentation"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.7",
+    "keras-tuner>=1.4.8",
+    "scipy>=1.17.1",
+    "scikit-learn>=1.8.0",
+    "grainsegmentation-core",
+]
+
+[tool.uv.sources]
+grainsegmentation-core = { path = "../../src" }
