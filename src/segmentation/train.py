@@ -3,6 +3,9 @@ import numpy as np
 import tensorflow as tf
 import keras_tuner as kt
 from keras.optimizers import Adam
+import warnings
+
+warnings.filterwarnings("ignore", message="Your input ran out of data")
 
 from .data import build_dataset, list_samples, create_spatial_cv_folds
 from .model import build_unet, initialize_from_checkpoint, weighted_crossentropy
@@ -19,9 +22,7 @@ class CVTuner(kt.BayesianOptimization):
         num_inputs,
         **kwargs,
     ):
-        hp_batch_size = trial.hyperparameters.Choice(
-            "batch_size", [1, 2, 4, 8, 16, 32, 64, 128]
-        )
+        hp_batch_size = trial.hyperparameters.Choice("batch_size", [1, 2, 4, 8, 16, 32])
 
         val_losses = []
         for i, (train_samples, val_samples) in enumerate(cv_folds):
@@ -46,6 +47,13 @@ class CVTuner(kt.BayesianOptimization):
             learning_rate = trial.hyperparameters.Float(
                 "learning_rate", min_value=1e-4, max_value=1e-2, sampling="log"
             )
+
+            if i == 0:
+                print(f"\n--- Details for Trial {trial.trial_id} ---")
+                for hp_name, hp_value in trial.hyperparameters.values.items():
+                    print(f"{hp_name}: {hp_value}")
+                print("-----------------------------------\n")
+
             optimizer = Adam(learning_rate=learning_rate)
 
             if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
@@ -61,14 +69,19 @@ class CVTuner(kt.BayesianOptimization):
                 restore_best_weights=True,
             )
 
-            history = model.fit(
-                train_dataset,
-                validation_data=val_dataset,
-                epochs=epochs,
-                callbacks=[early_stopping],
-                verbose=1,
-            )
-            val_losses.append(min(history.history["val_loss"]))
+            try:
+                history = model.fit(
+                    train_dataset,
+                    validation_data=val_dataset,
+                    epochs=epochs,
+                    callbacks=[early_stopping],
+                    verbose=2,
+                )
+                val_losses.append(min(history.history["val_loss"]))
+            except tf.errors.ResourceExhaustedError:
+                print(f"OOM with batch size {hp_batch_size}, marking trial as failure.")
+                tf.keras.backend.clear_session()
+                return {"val_loss": 1e9}
 
         return {"val_loss": np.mean(val_losses)}
 
@@ -90,6 +103,7 @@ def train_model(
     split_coverage_bins: int,
     num_inputs: int,
     run_name: str,
+    tuning_dir: str,
     n_splits: int,
     random_state: int,
     use_mixed_precision: bool,
@@ -115,13 +129,35 @@ def train_model(
         coverage_bins=split_coverage_bins,
     )
 
+    def build_hypermodel(hp):
+        if checkpoint_path:
+            return initialize_from_checkpoint(
+                checkpoint_path, patch_size, num_inputs=num_inputs, hp=hp
+            )
+        elif resume_path:
+            tf.keras.backend.clear_session()
+            model = tf.keras.models.load_model(
+                resume_path,
+                custom_objects={"weighted_crossentropy": weighted_crossentropy},
+            )
+            # We can still tune learning rate if we want
+            if hp:
+                learning_rate = hp.Float(
+                    "learning_rate", min_value=1e-4, max_value=1e-2, sampling="log"
+                )
+                from keras.optimizers import Adam
+
+                optimizer = Adam(learning_rate=learning_rate)
+                # the tuner compiling happens in run_trial, so we just return the model
+            return model
+        else:
+            return build_unet(patch_size, num_inputs=num_inputs, hp=hp)
+
     tuner = CVTuner(
-        hypermodel=lambda hp: build_unet(
-            patch_size=patch_size, num_inputs=num_inputs, hp=hp
-        ),
+        hypermodel=build_hypermodel,
         objective="val_loss",
         max_trials=max_trials,
-        directory=f"tuning_dir_{run_name}_{num_inputs}in",
+        directory=os.path.join(tuning_dir, f"tuning_{run_name}_{num_inputs}in"),
         project_name="unet_tuning",
         overwrite=True,
     )
@@ -172,7 +208,7 @@ def train_model(
     )
 
     final_model.fit(
-        full_dataset, epochs=final_epochs, callbacks=[reduce_lr, checkpoint]
+        full_dataset, epochs=final_epochs, callbacks=[reduce_lr, checkpoint], verbose=2
     )
 
     final_model.save(output_model_path)

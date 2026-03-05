@@ -5,3 +5,4 @@ notes.md
 .vscode/
 logs/
 *.gpkg
+__pycache__/

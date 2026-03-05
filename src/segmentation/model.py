@@ -23,13 +23,14 @@ def weighted_crossentropy(y_true, y_pred):
     return tf.reduce_mean(weighted_losses)
 
 
-def build_unet(patch_size, num_inputs=1, hp=None):
+def build_unet(patch_size, num_inputs=1, hp=None, base_filters=None):
     tf.keras.backend.clear_session()
 
     if num_inputs < 1:
         raise ValueError("num_inputs must be >= 1")
 
-    base_filters = hp.Choice("base_filters", [16, 32]) if hp else 16
+    if base_filters is None:
+        base_filters = hp.Choice("base_filters", [16, 32]) if hp else 16
 
     if num_inputs == 1:
         inputs = [Input((patch_size, patch_size, 3), name="input")]
@@ -117,11 +118,19 @@ def build_unet(patch_size, num_inputs=1, hp=None):
     return model
 
 
-def initialize_from_checkpoint(checkpoint_path, patch_size, num_inputs=7):
+def initialize_from_checkpoint(checkpoint_path, patch_size, num_inputs=7, hp=None):
+    tf.keras.backend.clear_session()
     source_model = tf.keras.models.load_model(
         checkpoint_path, custom_objects={"weighted_crossentropy": weighted_crossentropy}
     )
-    target_model = build_unet(patch_size, num_inputs=num_inputs)
+
+    # Infer base_filters from the first Conv2D layer of the checkpoint
+    first_conv = next(l for l in source_model.layers if isinstance(l, Conv2D))
+    ckpt_base_filters = first_conv.filters
+
+    target_model = build_unet(
+        patch_size, num_inputs=num_inputs, hp=hp, base_filters=ckpt_base_filters
+    )
     _transfer_weights(source_model, target_model, num_inputs=num_inputs)
     return target_model
 
@@ -143,11 +152,18 @@ def _transfer_weights(source_model, target_model, num_inputs):
 
         if layer_idx == 0 and isinstance(tgt, Conv2D):
             kernel, bias = src_weights
-            if kernel.shape[2] * num_inputs != tgt.get_weights()[0].shape[2]:
+            tgt_channels = tgt.get_weights()[0].shape[2]
+
+            # If the checkpoint already matches the target input channels, just copy it directly
+            if kernel.shape[2] == tgt_channels:
+                tgt.set_weights(src_weights)
+                continue
+
+            if kernel.shape[2] * num_inputs != tgt_channels:
                 raise ValueError(
                     "First conv input channels mismatch when expanding weights."
                 )
-            expanded_kernel = np.concatenate([kernel] * num_inputs, axis=2)
+            expanded_kernel = np.concatenate([kernel] * num_inputs, axis=2) / num_inputs
             tgt.set_weights([expanded_kernel, bias])
             continue
 

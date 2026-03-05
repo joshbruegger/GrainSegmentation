@@ -123,7 +123,10 @@ def list_samples(
         base_stem = stem[: -len(img1_suffix)]
         image_paths = []
         for idx, suffix in enumerate(image_suffixes[:num_inputs]):
-            img_path = img1_path.replace(img1_suffix, suffix)
+            img_ext = os.path.splitext(img1_path)[1]
+            img_path = os.path.join(
+                os.path.dirname(img1_path), f"{base_stem}{suffix}{img_ext}"
+            )
             if not os.path.exists(img_path):
                 raise FileNotFoundError(
                     f"Missing image for input {idx + 1} ({suffix}): {img_path}"
@@ -288,9 +291,8 @@ def build_dataset(
         output_signature=output_signature,
     )
 
-    # Cache the un-augmented patches in memory or fast disk
-    # This prevents re-reading images and extracting patches every epoch
-    dataset = dataset.cache()
+    # Note: Caching directly to memory without a path will cause OOM with large 3008x3008 patches.
+    # dataset = dataset.cache()
 
     if augment:
         dataset = dataset.map(

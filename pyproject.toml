@@ -3,7 +3,7 @@ name = "grainsegmentation"
 description = "Add your description here"
 version = "0.1.0"
 readme = "README.md"
-requires-python = "==3.13.1"
+requires-python = ">=3.12"
 dependencies = [
     "ruff>=0.14.6",
     "python-semantic-release>=10.5.2",
@@ -24,7 +24,6 @@ dependencies = [
     "keras-tuner>=1.4.8",
     "scipy>=1.17.1",
     "scikit-learn>=1.8.0",
-    "tensorflow>=2.20.0",
 ]
 
 [tool.semantic_release]

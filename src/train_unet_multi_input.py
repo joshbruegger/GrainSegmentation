@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
         help="Name of the run, used to separate tuning directories.",
     )
     parser.add_argument(
+        "--tuning-dir",
+        default="tuning_dir",
+        help="Base directory for hyperparameter tuning logs.",
+    )
+    parser.add_argument(
         "--image-suffixes",
         default="_PPL,_PPX1,_PPX2,_PPX3,_PPX4,_PPX5,_PPX6",
         help="Comma-separated list of image suffixes to load",
@@ -131,6 +136,7 @@ def main() -> None:
         split_coverage_bins=args.split_coverage_bins,
         num_inputs=args.num_inputs,
         run_name=args.run_name,
+        tuning_dir=args.tuning_dir,
         n_splits=args.folds,
         random_state=args.seed,
         use_mixed_precision=not args.no_mixed_precision,
