@@ -13,8 +13,12 @@ mkdir -p "$WORK_DIR/cropped"
 # Copy all the cropped images to the fast TMPDIR
 cp -r $SCRATCH/GrainSeg/dataset/MWD-1#121/cropped/* "$WORK_DIR/cropped/"
 
+echo "Syncing data prep environment..."
+cd src/data_prep
+uv sync
+
 echo "Running blending script on local storage..."
-cd src/data_prep && uv run python -u blend_tiffs.py \
+uv run --no-sync python -u blend_tiffs.py \
     "$WORK_DIR/cropped/" \
     "$WORK_DIR/PPX_blended.tif" \
     --exclude "$WORK_DIR/cropped/PPL_crop.tif"

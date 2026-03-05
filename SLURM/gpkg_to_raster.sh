@@ -32,7 +32,11 @@ OUTPUT_RASTER_NAME="$(basename "$OUTPUT_RASTER")"
 cp "$INPUT_GPKG" "$WORK_DIR/"
 cp "$REFERENCE_TIFF" "$WORK_DIR/"
 
-CMD=(uv run --directory src/data_prep python -u gpkg_to_raster.py
+echo "Syncing data prep environment..."
+cd src/data_prep
+uv sync
+
+CMD=(uv run --no-sync python -u gpkg_to_raster.py
     --input "$WORK_DIR/$INPUT_GPKG_NAME"
     --reference "$WORK_DIR/$REFERENCE_TIFF_NAME"
     --output "$WORK_DIR/$OUTPUT_RASTER_NAME"

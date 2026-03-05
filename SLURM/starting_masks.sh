@@ -24,8 +24,12 @@ mkdir -p "$WORK_DIR/out"
 
 cp "$INPUT_PATH" "$WORK_DIR/"
 
+echo "Syncing data prep environment..."
+cd src/data_prep
+uv sync
+
 echo "Running starting masks script on local storage..."
-cd src/data_prep && uv run python -u starting_masks.py \
+uv run --no-sync python -u starting_masks.py \
     --input "$WORK_DIR/$INPUT_NAME" \
     --output "$WORK_DIR/out" \
     --tile-size 6144 \
@@ -38,7 +42,7 @@ cd src/data_prep && uv run python -u starting_masks.py \
 
 
 echo "Running polygon conversion on local storage..."
-uv run python -u convert_rle_polygon.py rle2json \
+uv run --no-sync python -u convert_rle_polygon.py rle2json \
     -i "$WORK_DIR/out/${INPUT_STEM}.json" \
     -o "$WORK_DIR/out/${INPUT_STEM}.geojson"
 

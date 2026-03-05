@@ -50,8 +50,18 @@ LOCAL_DIR="$TMPDIR/dataset/cropped"
 # Suppress TensorFlow info logs
 export TF_CPP_MIN_LOG_LEVEL=2
 
+echo "Syncing training environment..."
+cd src/training
+uv sync
+
+echo "Installing TensorFlow wheel..."
+# Install our custom TensorFlow wheel compiled for RTX 6000 Blackwell
+# and the necessary exact CUDA dependency versions it needs (per the workaround)
+WHEEL_PATH="$SCRATCH/GrainSeg/wheels/tensorflow-2.17.0+nv25.2-cp312-cp312-linux_x86_64.whl"
+uv pip install nvidia-cudnn-cu12~=9.0 nvidia-nccl-cu12 nvidia-cuda-runtime-cu12~=12.8.0 nvidia-cusparse-cu12 nvidia-cufft-cu12 nvidia-cusolver-cu12 nvidia-cuda-nvcc-cu12 nvidia-cuda-nvrtc-cu12 "$WHEEL_PATH"
+
 echo "Running training..."
-cd src/training && uv run --no-sync python -u train_unet_multi_input.py \
+uv run --no-sync python -u train_unet_multi_input.py \
     --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
     --tuning-dir "$TMPDIR/tuning" \
     --image-dir "$LOCAL_DIR" \

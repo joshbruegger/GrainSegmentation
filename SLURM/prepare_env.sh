@@ -16,16 +16,6 @@ export VIRTUAL_ENV="$UV_PROJECT_ENVIRONMENT"
 # Use copy link mode to avoid issues with hard links to the source filesystem
 export UV_LINK_MODE=copy
 
-# sync the environment
-echo "Syncing environment..."
-uv sync --python 3.12
-
-echo "Installing TensorFlow wheel..."
-# Install our custom TensorFlow wheel compiled for RTX 6000 Blackwell
-# and the necessary exact CUDA dependency versions it needs (per the workaround)
-WHEEL_PATH="$SCRATCH/GrainSeg/wheels/tensorflow-2.17.0+nv25.2-cp312-cp312-linux_x86_64.whl"
-uv pip install nvidia-cudnn-cu12~=9.0 nvidia-nccl-cu12 nvidia-cuda-runtime-cu12~=12.8.0 nvidia-cusparse-cu12 nvidia-cufft-cu12 nvidia-cusolver-cu12 nvidia-cuda-nvcc-cu12 nvidia-cuda-nvrtc-cu12 "$WHEEL_PATH"
-
 # Ensure the pip-installed CUDA libraries are discoverable by TensorFlow
 export LD_LIBRARY_PATH="$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cudnn/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cublas/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cufft/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cusparse/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/cusolver/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/nccl/lib:$UV_PROJECT_ENVIRONMENT/lib/python3.12/site-packages/nvidia/nvjitlink/lib:${LD_LIBRARY_PATH:-}"
 
