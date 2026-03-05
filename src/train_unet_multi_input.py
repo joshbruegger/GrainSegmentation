@@ -49,8 +49,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image-suffixes",
-        default="_PPL,_PPX1,_PPX2,_PPX3,_PPX4,_PPX5,_PPX6",
-        help="Comma-separated list of image suffixes to load",
+        nargs="+",
+        default=["_PPL", "_PPX1", "_PPX2", "_PPX3", "_PPX4", "_PPX5", "_PPX6"],
+        help="List of space-separated image suffixes to load",
     )
     parser.add_argument(
         "--mask-ext",
@@ -129,7 +130,7 @@ def main() -> None:
         stride=stride,
         tune_epochs=args.tune_epochs,
         final_epochs=args.epochs,
-        image_suffixes=[s.strip() for s in args.image_suffixes.split(",")],
+        image_suffixes=[s.strip() for s in args.image_suffixes],
         mask_ext=args.mask_ext,
         mask_stem_suffix=args.mask_stem_suffix,
         split_tile_size=split_tile_size,
