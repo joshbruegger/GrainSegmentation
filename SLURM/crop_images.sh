@@ -22,7 +22,7 @@ cp "$DATA_DIR/$IN_LABELS" "$WORK_DIR/"
 cp "$DATA_DIR/"*.tif "$WORK_DIR/"
 
 echo "Running cropping script on local storage..."
-cd pipelines/data_prep && uv run python -u src/crop_images.py \
+cd src/data_prep && uv run python -u crop_images.py \
     --vector "$WORK_DIR/$IN_LABELS" \
     --out-vector "$WORK_DIR/$OUT_LABELS" \
     --image-dir "$WORK_DIR/" \

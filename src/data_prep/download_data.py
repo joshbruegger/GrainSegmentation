@@ -31,8 +31,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    import shutil
-
     terminal_size = shutil.get_terminal_size().columns
     print("\n\n")
     print(" GrainSegmentation Dataset Downloader ".center(terminal_size, "="))

@@ -14,7 +14,7 @@ mkdir -p "$WORK_DIR/cropped"
 cp -r $SCRATCH/GrainSeg/dataset/MWD-1#121/cropped/* "$WORK_DIR/cropped/"
 
 echo "Running blending script on local storage..."
-cd pipelines/data_prep && uv run python -u src/blend_tiffs.py \
+cd src/data_prep && uv run python -u blend_tiffs.py \
     "$WORK_DIR/cropped/" \
     "$WORK_DIR/PPX_blended.tif" \
     --exclude "$WORK_DIR/cropped/PPL_crop.tif"

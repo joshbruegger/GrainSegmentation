@@ -25,7 +25,7 @@ mkdir -p "$WORK_DIR/out"
 cp "$INPUT_PATH" "$WORK_DIR/"
 
 echo "Running starting masks script on local storage..."
-cd pipelines/data_prep && uv run python -u src/starting_masks.py \
+cd src/data_prep && uv run python -u starting_masks.py \
     --input "$WORK_DIR/$INPUT_NAME" \
     --output "$WORK_DIR/out" \
     --tile-size 6144 \
@@ -38,7 +38,7 @@ cd pipelines/data_prep && uv run python -u src/starting_masks.py \
 
 
 echo "Running polygon conversion on local storage..."
-uv run python -u src/convert_rle_polygon.py rle2json \
+uv run python -u convert_rle_polygon.py rle2json \
     -i "$WORK_DIR/out/${INPUT_STEM}.json" \
     -o "$WORK_DIR/out/${INPUT_STEM}.geojson"
 

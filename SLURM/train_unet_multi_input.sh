@@ -51,7 +51,7 @@ LOCAL_DIR="$TMPDIR/dataset/cropped"
 export TF_CPP_MIN_LOG_LEVEL=2
 
 echo "Running training..."
-cd pipelines/training && uv run --no-sync python -u src/train_unet_multi_input.py \
+cd src/training && uv run --no-sync python -u train_unet_multi_input.py \
     --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
     --tuning-dir "$TMPDIR/tuning" \
     --image-dir "$LOCAL_DIR" \

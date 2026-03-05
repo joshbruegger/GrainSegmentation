@@ -8,8 +8,8 @@ dependencies = [
     "keras-tuner>=1.4.8",
     "scipy>=1.17.1",
     "scikit-learn>=1.8.0",
-    "grainsegmentation-core",
+    "shared",
 ]
 
 [tool.uv.sources]
-grainsegmentation-core = { path = "../../src" }
+shared = { path = "/../src" }

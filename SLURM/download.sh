@@ -6,4 +6,4 @@
 
 source SLURM/prepare_env.sh
 
-cd pipelines/data_prep && uv run python -u src/download_data.py -o $SCRATCH/GrainSeg/dataset/source
+cd src/data_prep && uv run python -u download_data.py -o $SCRATCH/GrainSeg/dataset/source

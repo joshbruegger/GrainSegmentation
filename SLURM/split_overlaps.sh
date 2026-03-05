@@ -17,14 +17,14 @@ cp $SCRATCH/GrainSeg/dataset/MWD-1#121/labels_raw.gpkg "$WORK_DIR/"
 cp $SCRATCH/GrainSeg/dataset/MWD-1#121/MWD-1#121_s0c*.tif "$WORK_DIR/"
 
 echo "Running split overlaps script on local storage..."
-cd pipelines/data_prep && uv run python -u src/split_overlaps.py \
+cd src/data_prep && uv run python -u split_overlaps.py \
     --input "$WORK_DIR/labels_raw.gpkg" \
     --output "$WORK_DIR/labels_no_overlap.gpkg" \
     --min-area 300 \
     --workers 10
 
 echo "Running cropping script on local storage..."
-uv run python -u src/crop_images.py \
+uv run python -u crop_images.py \
     --vector "$WORK_DIR/labels_no_overlap.gpkg" \
     --out-vector "$WORK_DIR/labels_cropped.gpkg" \
     --image-dir "$WORK_DIR/" \
