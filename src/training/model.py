@@ -8,6 +8,7 @@ from keras.layers import (
     Conv2DTranspose,
     MaxPooling2D,
     concatenate,
+    Dropout,
 )
 
 
@@ -28,7 +29,11 @@ def build_unet(patch_size, num_inputs=1, hp=None, base_filters=None):
         raise ValueError("num_inputs must be >= 1")
 
     if base_filters is None:
-        base_filters = hp.Choice("base_filters", [16, 32]) if hp else 16
+        base_filters = hp.Choice("base_filters", [16, 32, 64]) if hp else 16
+
+    dropout_rate = (
+        hp.Float("dropout", min_value=0.0, max_value=0.5, step=0.1) if hp else 0.0
+    )
 
     if num_inputs == 1:
         inputs = [Input((patch_size, patch_size, 3), name="input")]
@@ -69,12 +74,16 @@ def build_unet(patch_size, num_inputs=1, hp=None, base_filters=None):
     conv5 = Conv2D(f5, (3, 3), activation="relu", padding="same")(pool4)
     conv5 = Conv2D(f5, (3, 3), activation="relu", padding="same")(conv5)
     conv5 = BatchNormalization()(conv5)
+    if dropout_rate > 0:
+        conv5 = Dropout(dropout_rate)(conv5)
 
     up6 = Conv2DTranspose(f4, (3, 3), strides=(2, 2), padding="same")(conv5)
     up6 = concatenate([up6, conv4])
     conv6 = Conv2D(f4, (3, 3), activation="relu", padding="same")(up6)
     conv6 = Conv2D(f4, (3, 3), activation="relu", padding="same")(conv6)
     conv6 = BatchNormalization()(conv6)
+    if dropout_rate > 0:
+        conv6 = Dropout(dropout_rate)(conv6)
 
     up7 = Conv2DTranspose(f3, (3, 3), strides=(2, 2), padding="same")(conv6)
     up7 = concatenate([up7, conv3])
