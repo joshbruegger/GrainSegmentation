@@ -4,7 +4,7 @@
 #SBATCH --mem=256G
 #SBATCH --cpus-per-task=16
 #SBATCH --gpus-per-node=rtx_pro_6000:2
-#SBATCH --time=12:00:00
+#SBATCH --time=05:00:00
 
 set -euo pipefail
 
@@ -24,12 +24,13 @@ fi
 
 # Help function
 function usage {
-    echo "Usage: $0 [-n <num_inputs>] [-s <image_suffixes>] [-r <run_name>] [-o <output_model>] [-c]"
+    echo "Usage: $0 [-n <num_inputs>] [-s <image_suffixes>] [-r <run_name>] [-o <output_model>] [-c] [-t]"
     echo "  -n <number>: Number of inputs (default: 7)"
     echo "  -s <string>: Image suffixes separated by spaces (default: '_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6')"
     echo "  -r <string>: Run name (default: '7in_PPL_AllPPX')"
     echo "  -o <path>: Output model path (optional)"
     echo "  -c: Continue/resume from latest model if it exists"
+    echo "  -t: Skip tuning"
     exit 1
 }
 
@@ -38,15 +39,17 @@ IMAGE_SUFFIXES="_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6"
 RUN_NAME="7in_PPL_AllPPX"
 OUTPUT_MODEL=""
 CONTINUE_RUN=0
+SKIP_TUNING_FLAG=""
 
 # Process flags
-while getopts ":n:s:r:o:ch" opt; do
+while getopts ":n:s:r:o:cht" opt; do
     case $opt in
         n) NUM_INPUTS="$OPTARG";;
         s) IMAGE_SUFFIXES="$OPTARG";;
         r) RUN_NAME="$OPTARG";;
         o) OUTPUT_MODEL="$OPTARG";;
         c) CONTINUE_RUN=1;;
+        t) SKIP_TUNING_FLAG="--skip-tuning";;
         h|\?) usage;;
     esac
 done
@@ -87,7 +90,7 @@ fi
 
 echo "Running training..."
 uv run --no-sync python -u train_unet_multi_input.py \
-    # --skip-tuning \
+    $SKIP_TUNING_FLAG \
     --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
     --tuning-dir "$SCRATCH/GrainSeg/tuning_logs" \
     --image-dir "$LOCAL_DIR" \

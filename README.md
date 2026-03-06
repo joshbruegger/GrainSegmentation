@@ -21,7 +21,7 @@ For the PPL + screen-blended PPX model, the 6 PPX images were combined into a si
 ### 3. Cross-Validation & Hyperparameter Optimization
 
 - **Spatial K-fold:** Splits the large training image using grid regions and grain-coverage stratification to ensure similar grain pixels per fold.
-- **Bayesian Optimization Loop:** A training runner evaluates candidate hyperparameter sets (base filters, learning rate, (maybe batch size)) across K folds to maximize mean validation metrics.
+- **Bayesian Optimization Loop:** A training runner evaluates candidate hyperparameter sets (base filters, learning rate, batch size, and dropout rate) across K folds to maximize mean validation metrics.
 
 ### 4. Evaluation
 
