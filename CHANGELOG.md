@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-03-06)
+
+### Features
+
+- Add log plotting script for training metrics
+  ([`efd027d`](https://github.com/joshbruegger/GrainSegmentation/commit/efd027d4908755d21c18e467d2760ab2948fffee))
+
+- Introduced `plot_training_log.py` to visualize training and validation accuracy and loss over
+  epochs. - Implemented log parsing using regex to extract relevant metrics from Keras training
+  logs. - Added functionality to save generated plots as PNG files for easy analysis.
+
+- Enhance SLURM scripts and training configuration
+  ([`d53b169`](https://github.com/joshbruegger/GrainSegmentation/commit/d53b169d1a8941e9d0772b33b5717aec568a8616))
+
+- Added a new flag `-c` to the SLURM submission script for resuming training from the latest model
+  checkpoint. - Increased GPU allocation in the training script from 1 to 2 for improved
+  performance. - Adjusted the tuning epochs from 20 to 30 to enhance model training. - Updated the
+  training logic to dynamically determine the number of GPUs available and adjust batch sizes
+  accordingly. - Added new dependencies for `tensorboard` and `setuptools` in the project
+  configuration.
+
+
 ## v0.3.0 (2026-03-06)
 
 ### Features
