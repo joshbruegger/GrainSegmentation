@@ -14,13 +14,11 @@ def find_optimal_batch_size(model_builder, train_dataset_fn, start_batch_size=32
     batch_size = start_batch_size
     while batch_size >= 1:
         print(f"Testing batch size: {batch_size}")
-        tf.keras.backend.clear_session()
         try:
             model = model_builder()
             dataset = train_dataset_fn(batch_size)
             model.fit(dataset, steps_per_epoch=1, epochs=1, verbose=0)
             print(f"Successfully ran with batch size: {batch_size}")
-            tf.keras.backend.clear_session()
             return batch_size
         except tf.errors.ResourceExhaustedError:
             print(f"OOM with batch size {batch_size}. Halving batch size.")
@@ -32,9 +30,8 @@ def find_optimal_batch_size(model_builder, train_dataset_fn, start_batch_size=32
 
 
 class CVTuner(kt.BayesianOptimization):
-    def __init__(self, strategy, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.strategy = strategy
 
     def run_trial(
         self,
@@ -47,10 +44,11 @@ class CVTuner(kt.BayesianOptimization):
         **kwargs,
     ):
         hp_batch_size = trial.hyperparameters.Choice("batch_size", [1, 2, 4, 8, 16, 32])
-        global_batch_size = hp_batch_size * self.strategy.num_replicas_in_sync
 
         val_losses = []
         for i, (train_samples, val_samples) in enumerate(cv_folds):
+            strategy = tf.distribute.MirroredStrategy()
+            global_batch_size = hp_batch_size * strategy.num_replicas_in_sync
             # Create a unique cache file prefix for each fold and trial
             tmpdir = os.environ.get("TMPDIR", "/tmp")
             job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -80,7 +78,7 @@ class CVTuner(kt.BayesianOptimization):
                 cache_file=val_cache,
             )
 
-            with self.strategy.scope():
+            with strategy.scope():
                 model = self.hypermodel.build(trial.hyperparameters)
                 learning_rate = trial.hyperparameters.Float(
                     "learning_rate", min_value=1e-4, max_value=1e-2, sampling="log"
@@ -117,7 +115,6 @@ class CVTuner(kt.BayesianOptimization):
                 val_losses.append(min(history.history["val_loss"]))
             except tf.errors.ResourceExhaustedError:
                 print(f"OOM with batch size {hp_batch_size}, marking trial as failure.")
-                tf.keras.backend.clear_session()
                 return {"val_loss": 1e9}
 
         return {"val_loss": np.mean(val_losses)}
@@ -150,7 +147,9 @@ def train_model(
     if use_mixed_precision:
         tf.keras.mixed_precision.set_global_policy("mixed_bfloat16")
 
-    strategy = tf.distribute.MirroredStrategy()
+    num_gpus = len(tf.config.list_logical_devices("GPU"))
+    print(f"Number of GPUs: {num_gpus}")
+    num_replicas_in_sync = num_gpus if num_gpus > 0 else 1
 
     samples = list_samples(
         image_dir=image_dir,
@@ -202,6 +201,7 @@ def train_model(
         learning_rate = 1e-3
 
         def compiled_model_builder():
+            strategy = tf.distribute.MirroredStrategy()
             with strategy.scope():
                 model = build_hypermodel(hp=None)
                 if resume_path and getattr(model, "optimizer", None) is not None:
@@ -217,7 +217,7 @@ def train_model(
                 return model
 
         def dataset_builder_fn(bs):
-            global_bs = bs * strategy.num_replicas_in_sync
+            global_bs = bs * num_replicas_in_sync
             return build_dataset(
                 train_samples,
                 patch_size=patch_size,
@@ -233,7 +233,7 @@ def train_model(
         )
         print(f"Optimal per-replica batch size found: {best_batch_size}")
 
-        global_batch_size = best_batch_size * strategy.num_replicas_in_sync
+        global_batch_size = best_batch_size * num_replicas_in_sync
 
         tmpdir = os.environ.get("TMPDIR", "/tmp")
         job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -263,7 +263,6 @@ def train_model(
 
     else:
         tuner = CVTuner(
-            strategy=strategy,
             hypermodel=build_hypermodel,
             objective="val_loss",
             max_trials=max_trials,
@@ -284,7 +283,7 @@ def train_model(
         print(f"Best hyperparameters: {best_hp.values}")
 
         best_batch_size = best_hp.get("batch_size")
-        global_batch_size = best_batch_size * strategy.num_replicas_in_sync
+        global_batch_size = best_batch_size * num_replicas_in_sync
         learning_rate = best_hp.get("learning_rate")
 
         all_train_samples = []
@@ -303,6 +302,7 @@ def train_model(
             cache_file=os.path.join(tmpdir, f"tf_cache_train_all_folds_{job_id}"),
         )
 
+        strategy = tf.distribute.MirroredStrategy()
         with strategy.scope():
             final_model = tuner.hypermodel.build(best_hp)
             optimizer = Adam(learning_rate=learning_rate)

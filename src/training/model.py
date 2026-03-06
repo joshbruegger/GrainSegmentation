@@ -24,8 +24,6 @@ def weighted_crossentropy(y_true, y_pred):
 
 
 def build_unet(patch_size, num_inputs=1, hp=None, base_filters=None):
-    tf.keras.backend.clear_session()
-
     if num_inputs < 1:
         raise ValueError("num_inputs must be >= 1")
 
@@ -119,7 +117,6 @@ def build_unet(patch_size, num_inputs=1, hp=None, base_filters=None):
 
 
 def initialize_from_checkpoint(checkpoint_path, patch_size, num_inputs=7, hp=None):
-    tf.keras.backend.clear_session()
     source_model = tf.keras.models.load_model(
         checkpoint_path, custom_objects={"weighted_crossentropy": weighted_crossentropy}
     )

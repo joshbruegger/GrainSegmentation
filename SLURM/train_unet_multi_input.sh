@@ -3,7 +3,7 @@
 #SBATCH --output=logs/%x-%j.log
 #SBATCH --mem=256G
 #SBATCH --cpus-per-task=16
-#SBATCH --gpus-per-node=rtx_pro_6000:1
+#SBATCH --gpus-per-node=rtx_pro_6000:2
 #SBATCH --time=12:00:00
 
 set -euo pipefail
@@ -87,7 +87,7 @@ fi
 
 echo "Running training..."
 uv run --no-sync python -u train_unet_multi_input.py \
-    --skip-tuning \
+    # --skip-tuning \
     --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
     --tuning-dir "$SCRATCH/GrainSeg/tuning_logs" \
     --image-dir "$LOCAL_DIR" \
@@ -97,7 +97,7 @@ uv run --no-sync python -u train_unet_multi_input.py \
     --patch-size 1024 \
     --patch-overlap 0.5 \
     --epochs 100 \
-    --tune-epochs 20 \
+    --tune-epochs 30 \
     --num-inputs "$NUM_INPUTS" \
     --image-suffixes $IMAGE_SUFFIXES \
     --mask-ext .tif \

@@ -8,6 +8,8 @@ dependencies = [
     "keras-tuner>=1.4.8",
     "scipy>=1.17.1",
     "scikit-learn>=1.8.0",
+    "tensorboard>=2.20.0",
+    "setuptools==81.0.0",
 ]
 
 [tool.uv.sources]
