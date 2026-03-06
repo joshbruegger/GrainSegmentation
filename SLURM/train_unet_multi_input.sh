@@ -2,18 +2,34 @@
 #SBATCH --job-name=Train
 #SBATCH --output=logs/%x-%j.log
 #SBATCH --mem=256G
+#SBATCH --cpus-per-task=16
 #SBATCH --gpus-per-node=rtx_pro_6000:1
 #SBATCH --time=12:00:00
 
 set -euo pipefail
 
+# Only attempt to cancel if running as a SLURM job
+if [ -n "${SLURM_JOB_NAME:-}" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
+    OLD_JOBS=$(squeue -u "$USER" -n "$SLURM_JOB_NAME" -h -o %i | grep -v "^$SLURM_JOB_ID$" || true)
+    
+    if [ -n "$OLD_JOBS" ]; then
+        echo "Canceling previous jobs with name $SLURM_JOB_NAME: $OLD_JOBS"
+        # Word-splitting automatically converts newlines to arguments
+        scancel $OLD_JOBS
+        
+        # Give the old job a few seconds to release file locks (logs, weights, etc.)
+        sleep 10
+    fi
+fi
+
 # Help function
 function usage {
-    echo "Usage: $0 [-n <num_inputs>] [-s <image_suffixes>] [-r <run_name>] [-o <output_model>]"
+    echo "Usage: $0 [-n <num_inputs>] [-s <image_suffixes>] [-r <run_name>] [-o <output_model>] [-c]"
     echo "  -n <number>: Number of inputs (default: 7)"
     echo "  -s <string>: Image suffixes separated by spaces (default: '_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6')"
     echo "  -r <string>: Run name (default: '7in_PPL_AllPPX')"
     echo "  -o <path>: Output model path (optional)"
+    echo "  -c: Continue/resume from latest model if it exists"
     exit 1
 }
 
@@ -21,14 +37,16 @@ NUM_INPUTS=7
 IMAGE_SUFFIXES="_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6"
 RUN_NAME="7in_PPL_AllPPX"
 OUTPUT_MODEL=""
+CONTINUE_RUN=0
 
 # Process flags
-while getopts ":n:s:r:o:h" opt; do
+while getopts ":n:s:r:o:ch" opt; do
     case $opt in
         n) NUM_INPUTS="$OPTARG";;
         s) IMAGE_SUFFIXES="$OPTARG";;
         r) RUN_NAME="$OPTARG";;
         o) OUTPUT_MODEL="$OPTARG";;
+        c) CONTINUE_RUN=1;;
         h|\?) usage;;
     esac
 done
@@ -58,6 +76,15 @@ echo "Installing TensorFlow wheel..."
 WHEEL_PATH="$SCRATCH/GrainSeg/wheels/tensorflow-2.17.0+nv25.2-cp312-cp312-linux_x86_64.whl"
 uv pip install nvidia-cudnn-cu12~=9.0 nvidia-nccl-cu12 nvidia-cuda-runtime-cu12~=12.8.0 nvidia-cusparse-cu12 nvidia-cufft-cu12 nvidia-cusolver-cu12 nvidia-cuda-nvcc-cu12 nvidia-cuda-nvrtc-cu12 "$WHEEL_PATH"
 
+LATEST_MODEL="${OUTPUT_MODEL%.keras}_latest.keras"
+
+if [ "$CONTINUE_RUN" -eq 1 ] && [ -f "$LATEST_MODEL" ]; then
+    CHECKPOINT_ARGS=("--resume" "$LATEST_MODEL")
+    echo "Resuming from latest model: $LATEST_MODEL"
+else
+    CHECKPOINT_ARGS=("--checkpoint" "../../models/pretrained/starting_point.keras")
+fi
+
 echo "Running training..."
 uv run --no-sync python -u train_unet_multi_input.py \
     --skip-tuning \
@@ -65,7 +92,7 @@ uv run --no-sync python -u train_unet_multi_input.py \
     --tuning-dir "$SCRATCH/GrainSeg/tuning_logs" \
     --image-dir "$LOCAL_DIR" \
     --mask-dir "$LOCAL_DIR" \
-    --checkpoint ../../models/pretrained/starting_point.keras \
+    "${CHECKPOINT_ARGS[@]}" \
     --output-model "$OUTPUT_MODEL" \
     --patch-size 1024 \
     --patch-overlap 0.5 \

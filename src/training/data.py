@@ -291,8 +291,7 @@ def build_dataset(
         output_signature=output_signature,
     )
 
-    # Note: Caching directly to memory without a path will cause OOM with large 3008x3008 patches.
-    # dataset = dataset.cache()
+    dataset = dataset.cache()
 
     if augment:
         dataset = dataset.map(

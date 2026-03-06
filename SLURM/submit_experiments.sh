@@ -56,6 +56,8 @@ if [ "$run_all_ppx" = true ]; then
     echo "Submitting PPL + All PPX (7 inputs) job..."
     sbatch \
         --job-name=Train_PPL_AllPPX \
+        --mem=512G \
+        --cpus-per-task=32 \
         SLURM/train_unet_multi_input.sh -n 7 -s "_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6" -r "7in_PPL_AllPPX"
     submitted=true
 fi

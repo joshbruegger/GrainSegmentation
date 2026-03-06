@@ -32,6 +32,10 @@ def find_optimal_batch_size(model_builder, train_dataset_fn, start_batch_size=32
 
 
 class CVTuner(kt.BayesianOptimization):
+    def __init__(self, strategy, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.strategy = strategy
+
     def run_trial(
         self,
         trial,
@@ -43,6 +47,7 @@ class CVTuner(kt.BayesianOptimization):
         **kwargs,
     ):
         hp_batch_size = trial.hyperparameters.Choice("batch_size", [1, 2, 4, 8, 16, 32])
+        global_batch_size = hp_batch_size * self.strategy.num_replicas_in_sync
 
         val_losses = []
         for i, (train_samples, val_samples) in enumerate(cv_folds):
@@ -50,7 +55,7 @@ class CVTuner(kt.BayesianOptimization):
                 train_samples,
                 patch_size=patch_size,
                 stride=stride,
-                batch_size=hp_batch_size,
+                batch_size=global_batch_size,
                 augment=True,
                 num_inputs=num_inputs,
             )
@@ -58,30 +63,30 @@ class CVTuner(kt.BayesianOptimization):
                 val_samples,
                 patch_size=patch_size,
                 stride=patch_size,  # Validation stride = patch_size for 0% overlap
-                batch_size=hp_batch_size,
+                batch_size=global_batch_size,
                 augment=False,
                 num_inputs=num_inputs,
             )
 
-            model = self.hypermodel.build(trial.hyperparameters)
-            learning_rate = trial.hyperparameters.Float(
-                "learning_rate", min_value=1e-4, max_value=1e-2, sampling="log"
-            )
+            with self.strategy.scope():
+                model = self.hypermodel.build(trial.hyperparameters)
+                learning_rate = trial.hyperparameters.Float(
+                    "learning_rate", min_value=1e-4, max_value=1e-2, sampling="log"
+                )
 
-            if i == 0:
-                print(f"\n--- Details for Trial {trial.trial_id} ---")
-                for hp_name, hp_value in trial.hyperparameters.values.items():
-                    print(f"{hp_name}: {hp_value}")
-                print("-----------------------------------\n")
+                if i == 0:
+                    print(f"\n--- Details for Trial {trial.trial_id} ---")
+                    for hp_name, hp_value in trial.hyperparameters.values.items():
+                        print(f"{hp_name}: {hp_value}")
+                    print("-----------------------------------\n")
 
-            optimizer = Adam(learning_rate=learning_rate)
+                optimizer = Adam(learning_rate=learning_rate)
 
-            if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
-                optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
-
-            model.compile(
-                optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
-            )
+                model.compile(
+                    optimizer=optimizer,
+                    loss=weighted_crossentropy,
+                    metrics=["accuracy"],
+                )
 
             early_stopping = tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
@@ -131,7 +136,9 @@ def train_model(
     skip_tuning: bool = False,
 ) -> tf.keras.Model:
     if use_mixed_precision:
-        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+        tf.keras.mixed_precision.set_global_policy("mixed_bfloat16")
+
+    strategy = tf.distribute.MirroredStrategy()
 
     samples = list_samples(
         image_dir=image_dir,
@@ -156,7 +163,6 @@ def train_model(
                 checkpoint_path, patch_size, num_inputs=num_inputs, hp=hp
             )
         elif resume_path:
-            tf.keras.backend.clear_session()
             model = tf.keras.models.load_model(
                 resume_path,
                 custom_objects={"weighted_crossentropy": weighted_crossentropy},
@@ -184,25 +190,27 @@ def train_model(
         learning_rate = 1e-3
 
         def compiled_model_builder():
-            model = build_hypermodel(hp=None)
-            if resume_path and getattr(model, "optimizer", None) is not None:
-                print("Resuming from checkpoint, retaining optimizer state.")
+            with strategy.scope():
+                model = build_hypermodel(hp=None)
+                if resume_path and getattr(model, "optimizer", None) is not None:
+                    print("Resuming from checkpoint, retaining optimizer state.")
+                    return model
+
+                optimizer = Adam(learning_rate=learning_rate)
+                model.compile(
+                    optimizer=optimizer,
+                    loss=weighted_crossentropy,
+                    metrics=["accuracy"],
+                )
                 return model
 
-            optimizer = Adam(learning_rate=learning_rate)
-            if use_mixed_precision:
-                optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
-            model.compile(
-                optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
-            )
-            return model
-
         def dataset_builder_fn(bs):
+            global_bs = bs * strategy.num_replicas_in_sync
             return build_dataset(
                 train_samples,
                 patch_size=patch_size,
                 stride=stride,
-                batch_size=bs,
+                batch_size=global_bs,
                 augment=True,
                 num_inputs=num_inputs,
             )
@@ -210,13 +218,15 @@ def train_model(
         best_batch_size = find_optimal_batch_size(
             compiled_model_builder, dataset_builder_fn, start_batch_size=32
         )
-        print(f"Optimal batch size found: {best_batch_size}")
+        print(f"Optimal per-replica batch size found: {best_batch_size}")
+
+        global_batch_size = best_batch_size * strategy.num_replicas_in_sync
 
         full_dataset = build_dataset(
             train_samples,
             patch_size=patch_size,
             stride=stride,
-            batch_size=best_batch_size,
+            batch_size=global_batch_size,
             augment=True,
             num_inputs=num_inputs,
         )
@@ -225,7 +235,7 @@ def train_model(
             val_samples,
             patch_size=patch_size,
             stride=patch_size,
-            batch_size=best_batch_size,
+            batch_size=global_batch_size,
             augment=False,
             num_inputs=num_inputs,
         )
@@ -236,6 +246,7 @@ def train_model(
 
     else:
         tuner = CVTuner(
+            strategy=strategy,
             hypermodel=build_hypermodel,
             objective="val_loss",
             max_trials=max_trials,
@@ -256,6 +267,7 @@ def train_model(
         print(f"Best hyperparameters: {best_hp.values}")
 
         best_batch_size = best_hp.get("batch_size")
+        global_batch_size = best_batch_size * strategy.num_replicas_in_sync
         learning_rate = best_hp.get("learning_rate")
 
         all_train_samples = []
@@ -266,22 +278,29 @@ def train_model(
             all_train_samples,
             patch_size=patch_size,
             stride=stride,
-            batch_size=best_batch_size,
+            batch_size=global_batch_size,
             augment=True,
             num_inputs=num_inputs,
         )
 
-        final_model = tuner.hypermodel.build(best_hp)
-        optimizer = Adam(learning_rate=learning_rate)
-        if use_mixed_precision:
-            optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
-
-        final_model.compile(
-            optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
-        )
+        with strategy.scope():
+            final_model = tuner.hypermodel.build(best_hp)
+            optimizer = Adam(learning_rate=learning_rate)
+            final_model.compile(
+                optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
+            )
 
         monitor_metric = "loss"
         fit_kwargs = {}
+
+    import datetime
+
+    log_dir = os.path.join(
+        "logs", "fit", f"{run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    )
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(
+        log_dir=log_dir, histogram_freq=1, update_freq="epoch"
+    )
 
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
         monitor=monitor_metric, factor=0.5, patience=10, min_lr=1e-6, verbose=1
@@ -298,10 +317,28 @@ def train_model(
         verbose=1,
     )
 
+    initial_epoch = 0
+    if (
+        skip_tuning
+        and resume_path
+        and getattr(final_model, "optimizer", None) is not None
+    ):
+        if final_model.optimizer.iterations.numpy() > 0:
+            print("Calculating dataset length for resuming...")
+            steps_per_epoch = 0
+            for _ in full_dataset:
+                steps_per_epoch += 1
+            if steps_per_epoch > 0:
+                initial_epoch = int(
+                    final_model.optimizer.iterations.numpy() // steps_per_epoch
+                )
+            print(f"Resuming training from epoch {initial_epoch}")
+
     final_model.fit(
         full_dataset,
         epochs=final_epochs,
-        callbacks=[reduce_lr, checkpoint_best, checkpoint_latest],
+        initial_epoch=initial_epoch,
+        callbacks=[reduce_lr, checkpoint_best, checkpoint_latest, tensorboard_callback],
         verbose=2,
         **fit_kwargs,
     )
