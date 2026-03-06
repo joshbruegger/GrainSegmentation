@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-03-06)
+
+### Features
+
+- Add caching support for dataset preparation in training
+  ([`087ac9b`](https://github.com/joshbruegger/GrainSegmentation/commit/087ac9b82e783811963f7e8efd307f53c5829670))
+
+- Enhanced the `build_dataset` function to accept an optional `cache_file` parameter for caching
+  datasets to disk. - Updated the training logic to create unique cache file paths for each fold and
+  trial when using cross-validation. - Ensured caching is configurable for both training and
+  validation datasets to optimize data loading during training.
+
+- Enhance SLURM scripts and training logic
+  ([`46df58a`](https://github.com/joshbruegger/GrainSegmentation/commit/46df58a46e2ce3652a236d1e96eebc3f19a3da68))
+
+- Increased memory allocation and CPU resources in SLURM job submission for improved performance. -
+  Added functionality to resume training from the latest model checkpoint. - Updated training script
+  to support dynamic batch size adjustments based on the number of replicas in sync. - Enabled
+  caching in dataset preparation to optimize data loading.
+
+
 ## v0.2.0 (2026-03-06)
 
 ### Features
