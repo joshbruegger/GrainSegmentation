@@ -4,11 +4,10 @@ import tensorflow as tf
 import keras_tuner as kt
 from keras.optimizers import Adam
 import warnings
+from data import build_dataset, list_samples, create_spatial_cv_folds
+from model import build_unet, initialize_from_checkpoint, weighted_crossentropy
 
 warnings.filterwarnings("ignore", message="Your input ran out of data")
-
-from .data import build_dataset, list_samples, create_spatial_cv_folds
-from .model import build_unet, initialize_from_checkpoint, weighted_crossentropy
 
 
 class CVTuner(kt.BayesianOptimization):

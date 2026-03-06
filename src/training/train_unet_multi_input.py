@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from train import train_model
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,7 +116,6 @@ def main() -> None:
 
     current_dir = os.path.dirname(__file__)
     sys.path.append(current_dir)
-    from segmentation.train import train_model
 
     split_tile_size = args.split_tile_size or args.patch_size
     stride = int(args.patch_size * (1 - args.patch_overlap))

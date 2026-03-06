@@ -1,11 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=GrainSegTrain
+#SBATCH --job-name=Train
 #SBATCH --output=logs/%x-%j.log
 #SBATCH --mem=256G
 #SBATCH --gpus-per-node=rtx_pro_6000:1
-#SBATCH --time=00:10:00
-
-# SHOULD BE 10H, short is for testing that everything is working before running the full job
+#SBATCH --time=10:00:00
 
 set -euo pipefail
 

@@ -39,7 +39,7 @@ submitted=false
 if [ "$run_ppl" = true ]; then
     echo "Submitting PPL only (1 input) job..."
     sbatch \
-        --job-name=GrainSegTrain_PPL \
+        --job-name=Train_PPL \
         SLURM/train_unet_multi_input.sh -n 1 -s "_PPL" -r "1in_PPL"
     submitted=true
 fi
@@ -47,7 +47,7 @@ fi
 if [ "$run_blended" = true ]; then
     echo "Submitting PPL + PPX Blended (2 inputs) job..."
     sbatch \
-        --job-name=GrainSegTrain_PPL_Blended \
+        --job-name=Train_PPL_Blended \
         SLURM/train_unet_multi_input.sh -n 2 -s "_PPL _PPX_blended" -r "2in_PPL_Blended"
     submitted=true
 fi
@@ -55,7 +55,7 @@ fi
 if [ "$run_all_ppx" = true ]; then
     echo "Submitting PPL + All PPX (7 inputs) job..."
     sbatch \
-        --job-name=GrainSegTrain_PPL_AllPPX \
+        --job-name=Train_PPL_AllPPX \
         SLURM/train_unet_multi_input.sh -n 7 -s "_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6" -r "7in_PPL_AllPPX"
     submitted=true
 fi
