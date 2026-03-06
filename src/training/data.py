@@ -279,6 +279,7 @@ def build_dataset(
     batch_size: int,
     augment: bool,
     num_inputs: int,
+    cache_file: str | None = None,
 ) -> tf.data.Dataset:
     image_spec = tf.TensorSpec(shape=(patch_size, patch_size, 3), dtype=tf.float32)
     output_signature = (
@@ -291,7 +292,10 @@ def build_dataset(
         output_signature=output_signature,
     )
 
-    dataset = dataset.cache()
+    if cache_file:
+        dataset = dataset.cache(cache_file)
+    else:
+        dataset = dataset.cache()
 
     if augment:
         dataset = dataset.map(

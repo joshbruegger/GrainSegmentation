@@ -51,6 +51,16 @@ class CVTuner(kt.BayesianOptimization):
 
         val_losses = []
         for i, (train_samples, val_samples) in enumerate(cv_folds):
+            # Create a unique cache file prefix for each fold and trial
+            tmpdir = os.environ.get("TMPDIR", "/tmp")
+            job_id = os.environ.get("SLURM_JOB_ID", "local")
+            train_cache = os.path.join(
+                tmpdir, f"tf_cache_train_fold{i}_trial{trial.trial_id}_{job_id}"
+            )
+            val_cache = os.path.join(
+                tmpdir, f"tf_cache_val_fold{i}_trial{trial.trial_id}_{job_id}"
+            )
+
             train_dataset = build_dataset(
                 train_samples,
                 patch_size=patch_size,
@@ -58,6 +68,7 @@ class CVTuner(kt.BayesianOptimization):
                 batch_size=global_batch_size,
                 augment=True,
                 num_inputs=num_inputs,
+                cache_file=train_cache,
             )
             val_dataset = build_dataset(
                 val_samples,
@@ -66,6 +77,7 @@ class CVTuner(kt.BayesianOptimization):
                 batch_size=global_batch_size,
                 augment=False,
                 num_inputs=num_inputs,
+                cache_file=val_cache,
             )
 
             with self.strategy.scope():
@@ -213,6 +225,7 @@ def train_model(
                 batch_size=global_bs,
                 augment=True,
                 num_inputs=num_inputs,
+                cache_file=None,  # Don't write to disk for just 1 step tests
             )
 
         best_batch_size = find_optimal_batch_size(
@@ -222,6 +235,8 @@ def train_model(
 
         global_batch_size = best_batch_size * strategy.num_replicas_in_sync
 
+        tmpdir = os.environ.get("TMPDIR", "/tmp")
+        job_id = os.environ.get("SLURM_JOB_ID", "local")
         full_dataset = build_dataset(
             train_samples,
             patch_size=patch_size,
@@ -229,6 +244,7 @@ def train_model(
             batch_size=global_batch_size,
             augment=True,
             num_inputs=num_inputs,
+            cache_file=os.path.join(tmpdir, f"tf_cache_train_full_{job_id}"),
         )
 
         val_dataset = build_dataset(
@@ -238,6 +254,7 @@ def train_model(
             batch_size=global_batch_size,
             augment=False,
             num_inputs=num_inputs,
+            cache_file=os.path.join(tmpdir, f"tf_cache_val_full_{job_id}"),
         )
 
         final_model = compiled_model_builder()
@@ -274,6 +291,8 @@ def train_model(
         for _, val_samples_fold in cv_folds:
             all_train_samples.extend(val_samples_fold)
 
+        tmpdir = os.environ.get("TMPDIR", "/tmp")
+        job_id = os.environ.get("SLURM_JOB_ID", "local")
         full_dataset = build_dataset(
             all_train_samples,
             patch_size=patch_size,
@@ -281,6 +300,7 @@ def train_model(
             batch_size=global_batch_size,
             augment=True,
             num_inputs=num_inputs,
+            cache_file=os.path.join(tmpdir, f"tf_cache_train_all_folds_{job_id}"),
         )
 
         with strategy.scope():
