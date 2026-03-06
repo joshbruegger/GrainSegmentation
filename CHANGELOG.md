@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-03-06)
+
+### Features
+
+- Enhance U-Net model with dropout regularization
+  ([`da9f4b4`](https://github.com/joshbruegger/GrainSegmentation/commit/da9f4b462251613ded59bb42ca86c9c6d96b1646))
+
+- Added Dropout layer support in the U-Net architecture to improve generalization. - Updated
+  base_filters option to include 64 for more flexibility in model configuration. - Introduced a new
+  hyperparameter for dropout rate, allowing dynamic adjustment during training.
+
+
 ## v0.4.0 (2026-03-06)
 
 ### Features
