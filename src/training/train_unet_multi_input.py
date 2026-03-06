@@ -100,6 +100,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable mixed precision training",
     )
+    parser.add_argument(
+        "--skip-tuning",
+        action="store_true",
+        help="Skip hyperparameter tuning and use sensible defaults",
+    )
     return parser.parse_args()
 
 
@@ -142,6 +147,7 @@ def main() -> None:
         random_state=args.seed,
         use_mixed_precision=not args.no_mixed_precision,
         max_trials=args.max_trials,
+        skip_tuning=args.skip_tuning,
     )
 
 

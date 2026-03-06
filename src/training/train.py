@@ -10,6 +10,27 @@ from model import build_unet, initialize_from_checkpoint, weighted_crossentropy
 warnings.filterwarnings("ignore", message="Your input ran out of data")
 
 
+def find_optimal_batch_size(model_builder, train_dataset_fn, start_batch_size=32):
+    batch_size = start_batch_size
+    while batch_size >= 1:
+        print(f"Testing batch size: {batch_size}")
+        tf.keras.backend.clear_session()
+        try:
+            model = model_builder()
+            dataset = train_dataset_fn(batch_size)
+            model.fit(dataset, steps_per_epoch=1, epochs=1, verbose=0)
+            print(f"Successfully ran with batch size: {batch_size}")
+            tf.keras.backend.clear_session()
+            return batch_size
+        except tf.errors.ResourceExhaustedError:
+            print(f"OOM with batch size {batch_size}. Halving batch size.")
+            batch_size //= 2
+
+    raise RuntimeError(
+        "Could not find a batch size that fits in memory, even batch_size=1 failed."
+    )
+
+
 class CVTuner(kt.BayesianOptimization):
     def run_trial(
         self,
@@ -107,6 +128,7 @@ def train_model(
     random_state: int,
     use_mixed_precision: bool,
     max_trials: int,
+    skip_tuning: bool = False,
 ) -> tf.keras.Model:
     if use_mixed_precision:
         tf.keras.mixed_precision.set_global_policy("mixed_float16")
@@ -128,7 +150,7 @@ def train_model(
         coverage_bins=split_coverage_bins,
     )
 
-    def build_hypermodel(hp):
+    def build_hypermodel(hp=None):
         if checkpoint_path:
             return initialize_from_checkpoint(
                 checkpoint_path, patch_size, num_inputs=num_inputs, hp=hp
@@ -150,64 +172,138 @@ def train_model(
                 # the tuner compiling happens in run_trial, so we just return the model
             return model
         else:
+            if hp is None:
+                return build_unet(
+                    patch_size, num_inputs=num_inputs, hp=hp, base_filters=16
+                )
             return build_unet(patch_size, num_inputs=num_inputs, hp=hp)
 
-    tuner = CVTuner(
-        hypermodel=build_hypermodel,
-        objective="val_loss",
-        max_trials=max_trials,
-        directory=os.path.join(tuning_dir, f"tuning_{run_name}_{num_inputs}in"),
-        project_name="unet_tuning",
-        overwrite=True,
-    )
+    if skip_tuning:
+        print("Skipping hyperparameter tuning. Using default settings.")
+        train_samples, val_samples = cv_folds[0]
+        learning_rate = 1e-3
 
-    tuner.search(
-        cv_folds=cv_folds,
-        patch_size=patch_size,
-        stride=stride,
-        epochs=tune_epochs,
-        num_inputs=num_inputs,
-    )
+        def compiled_model_builder():
+            model = build_hypermodel(hp=None)
+            if resume_path and getattr(model, "optimizer", None) is not None:
+                print("Resuming from checkpoint, retaining optimizer state.")
+                return model
 
-    best_hp = tuner.get_best_hyperparameters()[0]
-    print(f"Best hyperparameters: {best_hp.values}")
+            optimizer = Adam(learning_rate=learning_rate)
+            if use_mixed_precision:
+                optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+            model.compile(
+                optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
+            )
+            return model
 
-    best_batch_size = best_hp.get("batch_size")
+        def dataset_builder_fn(bs):
+            return build_dataset(
+                train_samples,
+                patch_size=patch_size,
+                stride=stride,
+                batch_size=bs,
+                augment=True,
+                num_inputs=num_inputs,
+            )
 
-    all_train_samples = []
-    for _, val_samples in cv_folds:
-        all_train_samples.extend(val_samples)
+        best_batch_size = find_optimal_batch_size(
+            compiled_model_builder, dataset_builder_fn, start_batch_size=32
+        )
+        print(f"Optimal batch size found: {best_batch_size}")
 
-    full_dataset = build_dataset(
-        all_train_samples,
-        patch_size=patch_size,
-        stride=stride,
-        batch_size=best_batch_size,
-        augment=True,
-        num_inputs=num_inputs,
-    )
+        full_dataset = build_dataset(
+            train_samples,
+            patch_size=patch_size,
+            stride=stride,
+            batch_size=best_batch_size,
+            augment=True,
+            num_inputs=num_inputs,
+        )
 
-    final_model = tuner.hypermodel.build(best_hp)
-    optimizer = Adam(learning_rate=best_hp.get("learning_rate"))
-    if use_mixed_precision:
-        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+        val_dataset = build_dataset(
+            val_samples,
+            patch_size=patch_size,
+            stride=patch_size,
+            batch_size=best_batch_size,
+            augment=False,
+            num_inputs=num_inputs,
+        )
 
-    final_model.compile(
-        optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
-    )
+        final_model = compiled_model_builder()
+        monitor_metric = "val_loss"
+        fit_kwargs = {"validation_data": val_dataset}
+
+    else:
+        tuner = CVTuner(
+            hypermodel=build_hypermodel,
+            objective="val_loss",
+            max_trials=max_trials,
+            directory=os.path.join(tuning_dir, f"tuning_{run_name}_{num_inputs}in"),
+            project_name="unet_tuning",
+            overwrite=True,
+        )
+
+        tuner.search(
+            cv_folds=cv_folds,
+            patch_size=patch_size,
+            stride=stride,
+            epochs=tune_epochs,
+            num_inputs=num_inputs,
+        )
+
+        best_hp = tuner.get_best_hyperparameters()[0]
+        print(f"Best hyperparameters: {best_hp.values}")
+
+        best_batch_size = best_hp.get("batch_size")
+        learning_rate = best_hp.get("learning_rate")
+
+        all_train_samples = []
+        for _, val_samples_fold in cv_folds:
+            all_train_samples.extend(val_samples_fold)
+
+        full_dataset = build_dataset(
+            all_train_samples,
+            patch_size=patch_size,
+            stride=stride,
+            batch_size=best_batch_size,
+            augment=True,
+            num_inputs=num_inputs,
+        )
+
+        final_model = tuner.hypermodel.build(best_hp)
+        optimizer = Adam(learning_rate=learning_rate)
+        if use_mixed_precision:
+            optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+
+        final_model.compile(
+            optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
+        )
+
+        monitor_metric = "loss"
+        fit_kwargs = {}
 
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
-        monitor="loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1
+        monitor=monitor_metric, factor=0.5, patience=10, min_lr=1e-6, verbose=1
     )
-    checkpoint = tf.keras.callbacks.ModelCheckpoint(
+    checkpoint_best = tf.keras.callbacks.ModelCheckpoint(
         filepath=output_model_path.replace(".keras", "_best.keras"),
-        monitor="loss",
+        monitor=monitor_metric,
         save_best_only=True,
+        verbose=1,
+    )
+    checkpoint_latest = tf.keras.callbacks.ModelCheckpoint(
+        filepath=output_model_path.replace(".keras", "_latest.keras"),
+        save_best_only=False,
         verbose=1,
     )
 
     final_model.fit(
-        full_dataset, epochs=final_epochs, callbacks=[reduce_lr, checkpoint], verbose=2
+        full_dataset,
+        epochs=final_epochs,
+        callbacks=[reduce_lr, checkpoint_best, checkpoint_latest],
+        verbose=2,
+        **fit_kwargs,
     )
 
     final_model.save(output_model_path)

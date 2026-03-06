@@ -3,7 +3,7 @@
 #SBATCH --output=logs/%x-%j.log
 #SBATCH --mem=256G
 #SBATCH --gpus-per-node=rtx_pro_6000:1
-#SBATCH --time=10:00:00
+#SBATCH --time=12:00:00
 
 set -euo pipefail
 
@@ -60,13 +60,14 @@ uv pip install nvidia-cudnn-cu12~=9.0 nvidia-nccl-cu12 nvidia-cuda-runtime-cu12~
 
 echo "Running training..."
 uv run --no-sync python -u train_unet_multi_input.py \
+    --skip-tuning \
     --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
-    --tuning-dir "$TMPDIR/tuning" \
+    --tuning-dir "$SCRATCH/GrainSeg/tuning_logs" \
     --image-dir "$LOCAL_DIR" \
     --mask-dir "$LOCAL_DIR" \
     --checkpoint ../../models/pretrained/starting_point.keras \
     --output-model "$OUTPUT_MODEL" \
-    --patch-size 3008 \
+    --patch-size 1024 \
     --patch-overlap 0.5 \
     --epochs 100 \
     --tune-epochs 20 \
@@ -75,7 +76,7 @@ uv run --no-sync python -u train_unet_multi_input.py \
     --mask-ext .tif \
     --mask-stem-suffix _labels
 
-echo "Copying tuning logs back to SCRATCH..."
-mkdir -p "$SCRATCH/GrainSeg/tuning_logs"
-cp -r "$TMPDIR/tuning" "$SCRATCH/GrainSeg/tuning_logs/"
+# echo "Copying tuning logs back to SCRATCH..."
+# mkdir -p "$SCRATCH/GrainSeg/tuning_logs"
+# cp -r "$TMPDIR/tuning" "$SCRATCH/GrainSeg/tuning_logs/"
 echo "Done."
