@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.6.0 (2026-03-06)
+
+### Features
+
+- Update README and SLURM scripts for training configuration
+  ([`27fea94`](https://github.com/joshbruegger/GrainSegmentation/commit/27fea940f0ec74273a0277786775f90619f6bfcd))
+
+- Updated README to include dropout rate in the Bayesian Optimization Loop description. - Enhanced
+  SLURM submission scripts by adding a `-t` flag to skip tuning during job submission. - Adjusted
+  resource allocation in SLURM scripts for improved performance and modified job time settings.
+
+
 ## v0.5.0 (2026-03-06)
 
 ### Features
