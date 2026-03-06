@@ -4,7 +4,7 @@
 #SBATCH --mem=256G
 #SBATCH --cpus-per-task=16
 #SBATCH --gpus-per-node=rtx_pro_6000:2
-#SBATCH --time=05:00:00
+#SBATCH --time=12:00:00
 
 set -euo pipefail
 
@@ -40,6 +40,7 @@ RUN_NAME="7in_PPL_AllPPX"
 OUTPUT_MODEL=""
 CONTINUE_RUN=0
 SKIP_TUNING_FLAG=""
+FOLDS=2
 
 # Process flags
 while getopts ":n:s:r:o:cht" opt; do
@@ -49,7 +50,7 @@ while getopts ":n:s:r:o:cht" opt; do
         r) RUN_NAME="$OPTARG";;
         o) OUTPUT_MODEL="$OPTARG";;
         c) CONTINUE_RUN=1;;
-        t) SKIP_TUNING_FLAG="--skip-tuning";;
+        t) SKIP_TUNING_FLAG="--skip-tuning"; FOLDS=5;;
         h|\?) usage;;
     esac
 done
@@ -95,12 +96,13 @@ uv run --no-sync python -u train_unet_multi_input.py \
     --tuning-dir "$SCRATCH/GrainSeg/tuning_logs" \
     --image-dir "$LOCAL_DIR" \
     --mask-dir "$LOCAL_DIR" \
+    --folds "$FOLDS" \
     "${CHECKPOINT_ARGS[@]}" \
     --output-model "$OUTPUT_MODEL" \
     --patch-size 1024 \
     --patch-overlap 0.5 \
     --epochs 100 \
-    --tune-epochs 30 \
+    --tune-epochs 20 \
     --num-inputs "$NUM_INPUTS" \
     --image-suffixes $IMAGE_SUFFIXES \
     --mask-ext .tif \

@@ -73,13 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--folds",
         type=int,
-        default=5,
+        default=2,
         help="Number of spatial folds for cross-validation",
     )
     parser.add_argument(
         "--max-trials",
         type=int,
-        default=10,
+        default=7,
         help="Maximum number of hyperparameter tuning trials",
     )
     parser.add_argument("--seed", type=int, default=42)
