@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.2.0 (2026-03-06)
+
+### Features
+
+- Add skip-tuning option and adjust training parameters
+  ([`1355c83`](https://github.com/joshbruegger/GrainSegmentation/commit/1355c83de770eadc2e87e8447322fd339c7d7e09))
+
+- Introduced `--skip-tuning` argument to bypass hyperparameter tuning and use default settings. -
+  Updated SLURM script to extend job time from 10 to 12 hours and modified tuning log directory. -
+  Changed patch size from 3008 to 1024 for training. - Enhanced training script to find optimal
+  batch size dynamically and adjusted model checkpointing for better tracking.
+
+
 ## v0.1.1 (2026-03-06)
 
 ### Bug Fixes
