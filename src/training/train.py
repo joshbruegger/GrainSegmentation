@@ -41,9 +41,10 @@ class CVTuner(kt.BayesianOptimization):
         stride,
         epochs,
         num_inputs,
+        best_batch_size,
         **kwargs,
     ):
-        hp_batch_size = trial.hyperparameters.Choice("batch_size", [1, 2, 4, 8, 16, 32])
+        hp_batch_size = best_batch_size
 
         val_losses = []
         for i, (train_samples, val_samples) in enumerate(cv_folds):
@@ -178,62 +179,51 @@ def train_model(
                 resume_path,
                 custom_objects={"weighted_crossentropy": weighted_crossentropy},
             )
-            # We can still tune learning rate if we want
-            if hp:
-                learning_rate = hp.Float(
-                    "learning_rate", min_value=1e-4, max_value=1e-2, sampling="log"
-                )
-                from keras.optimizers import Adam
-
-                optimizer = Adam(learning_rate=learning_rate)
-                # the tuner compiling happens in run_trial, so we just return the model
+            # The tuner compiling happens in run_trial, so we just return the model
             return model
         else:
-            if hp is None:
-                return build_unet(
-                    patch_size, num_inputs=num_inputs, hp=hp, base_filters=16
-                )
             return build_unet(patch_size, num_inputs=num_inputs, hp=hp)
+
+    def compiled_model_builder():
+        strategy = tf.distribute.MirroredStrategy()
+        with strategy.scope():
+            model = build_hypermodel(hp=None)
+            if resume_path and getattr(model, "optimizer", None) is not None:
+                print("Resuming from checkpoint, retaining optimizer state.")
+                return model
+
+            optimizer = Adam(learning_rate=1e-3)
+            model.compile(
+                optimizer=optimizer,
+                loss=weighted_crossentropy,
+                metrics=["accuracy"],
+            )
+            return model
+
+    train_samples_fold0 = cv_folds[0][0]
+
+    def dataset_builder_fn(bs):
+        global_bs = bs * num_replicas_in_sync
+        return build_dataset(
+            train_samples_fold0,
+            patch_size=patch_size,
+            stride=stride,
+            batch_size=global_bs,
+            augment=True,
+            num_inputs=num_inputs,
+            cache_file=None,  # Don't write to disk for just 1 step tests
+        )
+
+    best_batch_size = find_optimal_batch_size(
+        compiled_model_builder, dataset_builder_fn, start_batch_size=32
+    )
+    print(f"Optimal per-replica batch size found: {best_batch_size}")
+    global_batch_size = best_batch_size * num_replicas_in_sync
 
     if skip_tuning:
         print("Skipping hyperparameter tuning. Using default settings.")
         train_samples, val_samples = cv_folds[0]
         learning_rate = 1e-3
-
-        def compiled_model_builder():
-            strategy = tf.distribute.MirroredStrategy()
-            with strategy.scope():
-                model = build_hypermodel(hp=None)
-                if resume_path and getattr(model, "optimizer", None) is not None:
-                    print("Resuming from checkpoint, retaining optimizer state.")
-                    return model
-
-                optimizer = Adam(learning_rate=learning_rate)
-                model.compile(
-                    optimizer=optimizer,
-                    loss=weighted_crossentropy,
-                    metrics=["accuracy"],
-                )
-                return model
-
-        def dataset_builder_fn(bs):
-            global_bs = bs * num_replicas_in_sync
-            return build_dataset(
-                train_samples,
-                patch_size=patch_size,
-                stride=stride,
-                batch_size=global_bs,
-                augment=True,
-                num_inputs=num_inputs,
-                cache_file=None,  # Don't write to disk for just 1 step tests
-            )
-
-        best_batch_size = find_optimal_batch_size(
-            compiled_model_builder, dataset_builder_fn, start_batch_size=32
-        )
-        print(f"Optimal per-replica batch size found: {best_batch_size}")
-
-        global_batch_size = best_batch_size * num_replicas_in_sync
 
         tmpdir = os.environ.get("TMPDIR", "/tmp")
         job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -277,13 +267,12 @@ def train_model(
             stride=stride,
             epochs=tune_epochs,
             num_inputs=num_inputs,
+            best_batch_size=best_batch_size,
         )
 
         best_hp = tuner.get_best_hyperparameters()[0]
         print(f"Best hyperparameters: {best_hp.values}")
 
-        best_batch_size = best_hp.get("batch_size")
-        global_batch_size = best_batch_size * num_replicas_in_sync
         learning_rate = best_hp.get("learning_rate")
 
         all_train_samples = []

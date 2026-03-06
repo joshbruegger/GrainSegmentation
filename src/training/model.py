@@ -29,7 +29,7 @@ def build_unet(patch_size, num_inputs=1, hp=None, base_filters=None):
         raise ValueError("num_inputs must be >= 1")
 
     if base_filters is None:
-        base_filters = hp.Choice("base_filters", [16, 32, 64]) if hp else 16
+        base_filters = 16
 
     dropout_rate = (
         hp.Float("dropout", min_value=0.0, max_value=0.5, step=0.1) if hp else 0.0
