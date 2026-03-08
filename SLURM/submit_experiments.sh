@@ -14,6 +14,7 @@ function usage {
 }
 
 run_ppl=false
+run_pplppxblend=false
 run_blended=false
 run_all_ppx=false
 continue_run=""
@@ -23,11 +24,13 @@ skip_tuning=""
 while getopts ":pbxact" opt; do
     case $opt in
         p) run_ppl=true;;
+        m) run_pplppxblend=true;;
         b) run_blended=true;;
         x) run_all_ppx=true;;
         a) run_ppl=true
            run_blended=true
-           run_all_ppx=true;;
+           run_all_ppx=true
+           run_pplppxblend=true;;
         c) continue_run="-c";;
         t) skip_tuning="-t";;
         \?) echo "Invalid option -$OPTARG" >&2
@@ -46,23 +49,31 @@ if [ "$run_ppl" = true ]; then
     echo "Submitting PPL only (1 input) job..."
     sbatch \
         --job-name=Train_PPL \
-        SLURM/train_unet_multi_input.sh -n 1 -s "_PPL" -r "1in_PPL" $continue_run $skip_tuning
+        SLURM/train_unet_multi_input.sh -n 1 -s "_PPL" -r "PPL" $continue_run $skip_tuning
+    submitted=true
+fi
+
+if [ "$run_pplppxblend" = true ]; then
+    echo "Submitting PPLPPXBlend (1 input) job..."
+    sbatch \
+        --job-name=Train_PPLPPXBlend \
+        SLURM/train_unet_multi_input.sh -n 1 -s "_PPLPPXblend" -r "PPLPPXblend" $continue_run $skip_tuning
     submitted=true
 fi
 
 if [ "$run_blended" = true ]; then
-    echo "Submitting PPL + PPX Blended (2 inputs) job..."
+    echo "Submitting PPL + PPXblend (2 inputs) job..."
     sbatch \
-        --job-name=Train_PPL_Blended \
-        SLURM/train_unet_multi_input.sh -n 2 -s "_PPL _PPX_blended" -r "2in_PPL_Blended" $continue_run $skip_tuning
+        --job-name=Train_PPL+PPXblend \
+        SLURM/train_unet_multi_input.sh -n 2 -s "_PPL _PPXblend" -r "PPL+PPXblend" $continue_run $skip_tuning
     submitted=true
 fi
 
 if [ "$run_all_ppx" = true ]; then
     echo "Submitting PPL + All PPX (7 inputs) job..."
     sbatch \
-        --job-name=Train_PPL_AllPPX \
-        SLURM/train_unet_multi_input.sh -n 7 -s "_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6" -r "7in_PPL_AllPPX" $continue_run $skip_tuning
+        --job-name=Train_PPL+AllPPX \
+        SLURM/train_unet_multi_input.sh -n 7 -s "_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6" -r "PPL+AllPPX" $continue_run $skip_tuning
     submitted=true
 fi
 
