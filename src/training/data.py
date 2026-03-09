@@ -10,33 +10,27 @@ import tensorflow as tf
 Image.MAX_IMAGE_PIXELS = None
 
 
-def _pad_to_patch(
-    images: List[np.ndarray], label: np.ndarray, patch_size: int
-) -> Tuple[List[np.ndarray], np.ndarray]:
-    height, width = label.shape
-    pad_h = max(0, patch_size - height)
-    pad_w = max(0, patch_size - width)
-    if pad_h == 0 and pad_w == 0:
-        return images, label
-
-    pad_y = (0, pad_h)
-    pad_x = (0, pad_w)
-    label = np.pad(label, (pad_y, pad_x), mode="constant", constant_values=0)
-
-    padded_images = []
-    for img in images:
-        padded = np.pad(img, (pad_y, pad_x, (0, 0)), mode="constant", constant_values=0)
-        padded_images.append(padded)
-    return padded_images, label
-
-
-def _compute_starts(size: int, patch_size: int, stride: int) -> List[int]:
-    if size <= patch_size:
-        return [0]
-    starts = list(range(0, size - patch_size + 1, stride))
-    if starts[-1] != size - patch_size:
-        starts.append(size - patch_size)
-    return starts
+def _compute_starts_tf(size: tf.Tensor, patch_size: tf.Tensor, stride: tf.Tensor) -> tf.Tensor:
+    size = tf.cast(size, tf.int32)
+    patch_size = tf.cast(patch_size, tf.int32)
+    stride = tf.cast(stride, tf.int32)
+    
+    def get_starts():
+        limit = size - patch_size
+        starts = tf.range(0, limit + 1, stride)
+        last_start = starts[-1]
+        
+        return tf.cond(
+            tf.equal(last_start, limit),
+            lambda: starts,
+            lambda: tf.concat([starts, [limit]], axis=0)
+        )
+        
+    return tf.cond(
+        size <= patch_size,
+        lambda: tf.constant([0], dtype=tf.int32),
+        get_starts
+    )
 
 
 def _tf_augment(
@@ -225,53 +219,6 @@ def create_spatial_cv_folds(
     return folds
 
 
-def _sample_patch_generator(
-    samples: Iterable[Dict[str, Any]],
-    patch_size: int,
-    stride: int,
-    num_inputs: int,
-) -> Iterable[Tuple[Tuple[np.ndarray, ...], np.ndarray]]:
-    if patch_size <= 0 or stride <= 0:
-        raise ValueError("patch_size and stride must be > 0")
-    for sample in samples:
-        images = [_load_rgb_image(p) for p in sample["images"]]
-        if len(images) != num_inputs:
-            raise ValueError("Mismatch between num_inputs and loaded images.")
-        height, width, _ = images[0].shape
-        for img in images[1:]:
-            if img.shape != images[0].shape:
-                raise ValueError("All input images must share the same shape.")
-
-        raw_mask = _load_raster_mask(sample["mask"])
-        if raw_mask.shape != (height, width):
-            raise ValueError(
-                f"Mask shape {raw_mask.shape} does not match image "
-                f"shape {(height, width)} for {sample['mask']}"
-            )
-        label = raw_mask.astype(np.uint8)
-        region = sample.get("region")
-        if region is not None:
-            y0, y1, x0, x1 = region
-            images = [img[y0:y1, x0:x1, :] for img in images]
-            label = label[y0:y1, x0:x1]
-
-        images, label = _pad_to_patch(images, label, patch_size)
-        height, width = label.shape
-
-        y_starts = _compute_starts(height, patch_size, stride)
-        x_starts = _compute_starts(width, patch_size, stride)
-
-        for y in y_starts:
-            for x in x_starts:
-                patch_images = [
-                    img[y : y + patch_size, x : x + patch_size, :] for img in images
-                ]
-                patch_label = label[y : y + patch_size, x : x + patch_size]
-
-                one_hot = np.eye(3, dtype=np.float32)[patch_label]
-                yield tuple(patch_images[:num_inputs]), one_hot
-
-
 def build_dataset(
     samples: List[Dict[str, Any]],
     patch_size: int,
@@ -281,27 +228,106 @@ def build_dataset(
     num_inputs: int,
     cache_file: str | None = None,
 ) -> tf.data.Dataset:
-    image_spec = tf.TensorSpec(shape=(patch_size, patch_size, 3), dtype=tf.float32)
-    output_signature = (
-        tuple([image_spec] * num_inputs),
-        tf.TensorSpec(shape=(patch_size, patch_size, 3), dtype=tf.float32),
-    )
+    if not samples:
+        raise ValueError("samples list must not be empty")
+        
+    images_list = [s["images"] for s in samples]
+    mask_list = [s["mask"] for s in samples]
+    region_list = [s.get("region", (0, 0, 0, 0)) for s in samples]
+    has_region_list = [("region" in s) for s in samples]
 
-    dataset = tf.data.Dataset.from_generator(
-        lambda: _sample_patch_generator(samples, patch_size, stride, num_inputs),
-        output_signature=output_signature,
-    )
+    ds = tf.data.Dataset.from_tensor_slices((
+        images_list, mask_list, region_list, has_region_list
+    ))
+    
+    def _load_sample_py(image_paths_tensor, mask_path_tensor, region_tensor, has_region_tensor):
+        image_paths = [p.decode("utf-8") for p in image_paths_tensor.numpy()]
+        mask_path = mask_path_tensor.numpy().decode("utf-8")
+        region = region_tensor.numpy()
+        has_region = has_region_tensor.numpy()
+
+        images = [_load_rgb_image(p) for p in image_paths]
+        mask = _load_raster_mask(mask_path)
+
+        if has_region:
+            y0, y1, x0, x1 = region
+            images = [img[y0:y1, x0:x1, :] for img in images]
+            mask = mask[y0:y1, x0:x1]
+            
+        return tuple(images) + (mask.astype(np.int32),)
+
+    def _py_wrapper(image_paths, mask_path, region, has_region):
+        res = tf.py_function(
+            func=_load_sample_py,
+            inp=[image_paths, mask_path, region, has_region],
+            Tout=[tf.float32] * num_inputs + [tf.int32]
+        )
+        for i in range(num_inputs):
+            res[i].set_shape([None, None, 3])
+        res[-1].set_shape([None, None])
+        return tuple(res[:num_inputs]), res[-1]
+
+    ds = ds.map(_py_wrapper, num_parallel_calls=tf.data.AUTOTUNE)
+
+    def pad_fn(images_tuple, mask):
+        shape = tf.shape(mask)
+        height, width = shape[0], shape[1]
+        
+        pad_h = tf.maximum(0, patch_size - height)
+        pad_w = tf.maximum(0, patch_size - width)
+        
+        paddings_img = [[0, pad_h], [0, pad_w], [0, 0]]
+        paddings_mask = [[0, pad_h], [0, pad_w]]
+        
+        padded_images = tuple([tf.pad(img, paddings_img, mode='CONSTANT', constant_values=0.0) for img in images_tuple])
+        padded_mask = tf.pad(mask, paddings_mask, mode='CONSTANT', constant_values=0)
+        
+        return padded_images, padded_mask
+
+    ds = ds.map(pad_fn, num_parallel_calls=tf.data.AUTOTUNE)
+
+    def extract_patches_fn(images_tuple, mask):
+        shape = tf.shape(mask)
+        height = shape[0]
+        width = shape[1]
+        
+        y_starts = _compute_starts_tf(height, tf.constant(patch_size, dtype=tf.int32), tf.constant(stride, dtype=tf.int32))
+        x_starts = _compute_starts_tf(width, tf.constant(patch_size, dtype=tf.int32), tf.constant(stride, dtype=tf.int32))
+        
+        Y, X = tf.meshgrid(y_starts, x_starts, indexing='ij')
+        coords = tf.stack([tf.reshape(Y, [-1]), tf.reshape(X, [-1])], axis=1)
+        
+        coord_ds = tf.data.Dataset.from_tensor_slices(coords)
+        
+        def crop_patch(coord):
+            y = coord[0]
+            x = coord[1]
+            
+            patch_images = tuple([
+                tf.image.crop_to_bounding_box(img, y, x, patch_size, patch_size)
+                for img in images_tuple
+            ])
+            patch_mask = tf.image.crop_to_bounding_box(tf.expand_dims(mask, -1), y, x, patch_size, patch_size)
+            patch_mask = tf.squeeze(patch_mask, axis=-1)
+            
+            patch_label = tf.one_hot(patch_mask, depth=3, dtype=tf.float32)
+            
+            return patch_images, patch_label
+            
+        return coord_ds.map(crop_patch)
+
+    ds = ds.flat_map(extract_patches_fn)
 
     if cache_file:
-        dataset = dataset.cache(cache_file)
+        ds = ds.cache(cache_file)
     else:
-        dataset = dataset.cache()
+        ds = ds.cache()
 
     if augment:
-        dataset = dataset.map(
+        ds = ds.map(
             _tf_augment, num_parallel_calls=tf.data.AUTOTUNE, deterministic=False
         )
-        dataset = dataset.shuffle(buffer_size=100)
+        ds = ds.shuffle(buffer_size=100)
 
-    dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    return dataset
+    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    return ds
