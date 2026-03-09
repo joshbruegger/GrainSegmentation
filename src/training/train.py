@@ -121,6 +121,95 @@ class CVTuner(kt.BayesianOptimization):
         return {"val_loss": np.mean(val_losses)}
 
 
+def load_saved_model(model_path: str):
+    return tf.keras.models.load_model(
+        model_path,
+        custom_objects={"weighted_crossentropy": weighted_crossentropy},
+    )
+
+
+def build_model_for_tuning(
+    checkpoint_path: str | None,
+    resume_path: str | None,
+    patch_size: int,
+    num_inputs: int,
+    hp=None,
+):
+    del resume_path
+    if checkpoint_path:
+        return initialize_from_checkpoint(
+            checkpoint_path, patch_size, num_inputs=num_inputs, hp=hp
+        )
+    return build_unet(patch_size, num_inputs=num_inputs, hp=hp)
+
+
+def build_final_model(
+    checkpoint_path: str | None,
+    resume_path: str | None,
+    patch_size: int,
+    num_inputs: int,
+    hp=None,
+):
+    if resume_path:
+        return load_saved_model(resume_path)
+    return build_model_for_tuning(
+        checkpoint_path=checkpoint_path,
+        resume_path=None,
+        patch_size=patch_size,
+        num_inputs=num_inputs,
+        hp=hp,
+    )
+
+
+def compile_model_for_training(model, learning_rate: float):
+    if getattr(model, "optimizer", None) is not None:
+        print("Resuming from checkpoint, retaining optimizer state.")
+        return model
+
+    optimizer = Adam(learning_rate=learning_rate)
+    model.compile(
+        optimizer=optimizer,
+        loss=weighted_crossentropy,
+        metrics=["accuracy"],
+    )
+    return model
+
+
+def infer_initial_epoch(model, dataset) -> int:
+    if getattr(model, "optimizer", None) is None:
+        return 0
+
+    iterations = model.optimizer.iterations.numpy()
+    if iterations <= 0:
+        return 0
+
+    print("Calculating dataset length for resuming...")
+    steps_per_epoch = sum(1 for _ in dataset)
+    if steps_per_epoch <= 0:
+        return 0
+
+    initial_epoch = int(iterations // steps_per_epoch)
+    print(f"Resuming training from epoch {initial_epoch}")
+    return initial_epoch
+
+
+def create_tuner(
+    hypermodel,
+    max_trials: int,
+    tuning_dir: str,
+    run_name: str,
+    num_inputs: int,
+):
+    return CVTuner(
+        hypermodel=hypermodel,
+        objective="val_loss",
+        max_trials=max_trials,
+        directory=os.path.join(tuning_dir, f"tuning_{run_name}_{num_inputs}in"),
+        project_name="unet_tuning",
+        overwrite=False,
+    )
+
+
 def train_model(
     image_dir: str,
     mask_dir: str,
@@ -170,35 +259,29 @@ def train_model(
     )
 
     def build_hypermodel(hp=None):
-        if checkpoint_path:
-            return initialize_from_checkpoint(
-                checkpoint_path, patch_size, num_inputs=num_inputs, hp=hp
-            )
-        elif resume_path:
-            model = tf.keras.models.load_model(
-                resume_path,
-                custom_objects={"weighted_crossentropy": weighted_crossentropy},
-            )
-            # The tuner compiling happens in run_trial, so we just return the model
-            return model
-        else:
-            return build_unet(patch_size, num_inputs=num_inputs, hp=hp)
+        return build_model_for_tuning(
+            checkpoint_path=checkpoint_path,
+            resume_path=resume_path,
+            patch_size=patch_size,
+            num_inputs=num_inputs,
+            hp=hp,
+        )
 
     def compiled_model_builder():
         strategy = tf.distribute.MirroredStrategy()
         with strategy.scope():
-            model = build_hypermodel(hp=None)
-            if resume_path and getattr(model, "optimizer", None) is not None:
-                print("Resuming from checkpoint, retaining optimizer state.")
-                return model
-
-            optimizer = Adam(learning_rate=1e-3)
-            model.compile(
-                optimizer=optimizer,
-                loss=weighted_crossentropy,
-                metrics=["accuracy"],
+            model = (
+                build_final_model(
+                    checkpoint_path=checkpoint_path,
+                    resume_path=resume_path,
+                    patch_size=patch_size,
+                    num_inputs=num_inputs,
+                    hp=None,
+                )
+                if skip_tuning
+                else build_hypermodel(hp=None)
             )
-            return model
+            return compile_model_for_training(model, learning_rate=1e-3)
 
     train_samples_fold0 = cv_folds[0][0]
 
@@ -252,13 +335,12 @@ def train_model(
         fit_kwargs = {"validation_data": val_dataset}
 
     else:
-        tuner = CVTuner(
+        tuner = create_tuner(
             hypermodel=build_hypermodel,
-            objective="val_loss",
             max_trials=max_trials,
-            directory=os.path.join(tuning_dir, f"tuning_{run_name}_{num_inputs}in"),
-            project_name="unet_tuning",
-            overwrite=True,
+            tuning_dir=tuning_dir,
+            run_name=run_name,
+            num_inputs=num_inputs,
         )
 
         tuner.search(
@@ -293,11 +375,14 @@ def train_model(
 
         strategy = tf.distribute.MirroredStrategy()
         with strategy.scope():
-            final_model = tuner.hypermodel.build(best_hp)
-            optimizer = Adam(learning_rate=learning_rate)
-            final_model.compile(
-                optimizer=optimizer, loss=weighted_crossentropy, metrics=["accuracy"]
+            final_model = build_final_model(
+                checkpoint_path=checkpoint_path,
+                resume_path=resume_path,
+                patch_size=patch_size,
+                num_inputs=num_inputs,
+                hp=best_hp,
             )
+            final_model = compile_model_for_training(final_model, learning_rate)
 
         monitor_metric = "loss"
         fit_kwargs = {}
@@ -327,21 +412,8 @@ def train_model(
     )
 
     initial_epoch = 0
-    if (
-        skip_tuning
-        and resume_path
-        and getattr(final_model, "optimizer", None) is not None
-    ):
-        if final_model.optimizer.iterations.numpy() > 0:
-            print("Calculating dataset length for resuming...")
-            steps_per_epoch = 0
-            for _ in full_dataset:
-                steps_per_epoch += 1
-            if steps_per_epoch > 0:
-                initial_epoch = int(
-                    final_model.optimizer.iterations.numpy() // steps_per_epoch
-                )
-            print(f"Resuming training from epoch {initial_epoch}")
+    if resume_path:
+        initial_epoch = infer_initial_epoch(final_model, full_dataset)
 
     final_model.fit(
         full_dataset,

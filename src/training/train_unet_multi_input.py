@@ -4,7 +4,7 @@ import sys
 from train import train_model
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fine-tune multi-input U-Net from raster masks."
     )
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         default=None,
-        help="Path to a checkpoint to resume training (.keras).",
+        help="Path to a saved final-training checkpoint to resume (.keras).",
     )
     parser.add_argument(
         "--output-model", required=True, help="Path to save the fine-tuned model"
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-name",
         default="default_run",
-        help="Name of the run, used to separate tuning directories.",
+        help="Stable run name used for output naming and tuner state directories.",
     )
     parser.add_argument(
         "--tuning-dir",
@@ -105,11 +105,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip hyperparameter tuning and use sensible defaults",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     if args.num_inputs not in {1, 2, 7}:
         raise ValueError("--num-inputs must be one of: 1, 2, 7.")
     if args.checkpoint and args.resume:

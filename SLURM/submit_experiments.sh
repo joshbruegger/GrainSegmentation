@@ -2,44 +2,71 @@
 
 # Help function
 function usage {
-    echo "Usage: $0 [-p] [-b] [-x] [-a] [-c] [-t]"
-    echo "  -p: submit PPL only (1 input) job"
-    echo "  -b: submit PPL + PPX Blended (2 inputs) job"
-    echo "  -x: submit PPL + All PPX (7 inputs) job"
-    echo "  -a: submit ALL jobs"
-    echo "  -c: continue/resume from latest model if it exists"
-    echo "  -t: skip tuning"
-    echo "  combination of flags is possible (e.g. -pxc)"
+    echo "Usage: $0 [--ppl] [--ppl-ppx-composite] [--ppl-plus-ppx-composite] [--all-ppx] [--all] [--resume] [--skip-tuning] [--help]"
+    echo "  --ppl: submit PPL-only (1 input) job"
+    echo "  --ppl-ppx-composite: submit single PPL+PPX composite (1 input) job"
+    echo "  --ppl-plus-ppx-composite: submit PPL + PPX composite (2 inputs) job"
+    echo "  --all-ppx: submit PPL + all PPX images (7 inputs) job"
+    echo "  --all: submit all jobs"
+    echo "  --resume: resume selected jobs from their latest saved model if it exists"
+    echo "  --skip-tuning: skip tuning for selected jobs"
+    echo "  Combination of flags is allowed."
     exit 1
 }
 
 run_ppl=false
-run_pplppxblend=false
-run_blended=false
+run_ppl_ppx_composite=false
+run_ppl_plus_ppx_composite=false
 run_all_ppx=false
-continue_run=""
-skip_tuning=""
+resume_args=()
+skip_tuning_args=()
 
 # Process flags
-while getopts ":pbxact" opt; do
-    case $opt in
-        p) run_ppl=true;;
-        m) run_pplppxblend=true;;
-        b) run_blended=true;;
-        x) run_all_ppx=true;;
-        a) run_ppl=true
-           run_blended=true
-           run_all_ppx=true
-           run_pplppxblend=true;;
-        c) continue_run="-c";;
-        t) skip_tuning="-t";;
-        \?) echo "Invalid option -$OPTARG" >&2
-            usage;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ppl)
+            run_ppl=true
+            shift
+            ;;
+        --ppl-ppx-composite)
+            run_ppl_ppx_composite=true
+            shift
+            ;;
+        --ppl-plus-ppx-composite)
+            run_ppl_plus_ppx_composite=true
+            shift
+            ;;
+        --all-ppx)
+            run_all_ppx=true
+            shift
+            ;;
+        --all)
+            run_ppl=true
+            run_ppl_ppx_composite=true
+            run_ppl_plus_ppx_composite=true
+            run_all_ppx=true
+            shift
+            ;;
+        --resume)
+            resume_args=(--resume)
+            shift
+            ;;
+        --skip-tuning)
+            skip_tuning_args=(--skip-tuning)
+            shift
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage
+            ;;
     esac
 done
 
 # If no flags provided, show usage
-if [ "$OPTIND" -eq 1 ]; then
+if [ "$run_ppl" = false ] && [ "$run_ppl_ppx_composite" = false ] && [ "$run_ppl_plus_ppx_composite" = false ] && [ "$run_all_ppx" = false ]; then
     usage
 fi
 
@@ -49,23 +76,38 @@ if [ "$run_ppl" = true ]; then
     echo "Submitting PPL only (1 input) job..."
     sbatch \
         --job-name=Train_PPL \
-        SLURM/train_unet_multi_input.sh -n 1 -s "_PPL" -r "PPL" $continue_run $skip_tuning
+        SLURM/train_unet_multi_input.sh \
+        --num-inputs 1 \
+        --image-suffixes "_PPL" \
+        --run-name "PPL" \
+        "${resume_args[@]}" \
+        "${skip_tuning_args[@]}"
     submitted=true
 fi
 
-if [ "$run_pplppxblend" = true ]; then
+if [ "$run_ppl_ppx_composite" = true ]; then
     echo "Submitting PPLPPXBlend (1 input) job..."
     sbatch \
         --job-name=Train_PPLPPXBlend \
-        SLURM/train_unet_multi_input.sh -n 1 -s "_PPLPPXblend" -r "PPLPPXblend" $continue_run $skip_tuning
+        SLURM/train_unet_multi_input.sh \
+        --num-inputs 1 \
+        --image-suffixes "_PPLPPXblend" \
+        --run-name "PPLPPXblend" \
+        "${resume_args[@]}" \
+        "${skip_tuning_args[@]}"
     submitted=true
 fi
 
-if [ "$run_blended" = true ]; then
+if [ "$run_ppl_plus_ppx_composite" = true ]; then
     echo "Submitting PPL + PPXblend (2 inputs) job..."
     sbatch \
         --job-name=Train_PPL+PPXblend \
-        SLURM/train_unet_multi_input.sh -n 2 -s "_PPL _PPXblend" -r "PPL+PPXblend" $continue_run $skip_tuning
+        SLURM/train_unet_multi_input.sh \
+        --num-inputs 2 \
+        --image-suffixes "_PPL _PPXblend" \
+        --run-name "PPL+PPXblend" \
+        "${resume_args[@]}" \
+        "${skip_tuning_args[@]}"
     submitted=true
 fi
 
@@ -75,7 +117,12 @@ if [ "$run_all_ppx" = true ]; then
         --job-name=Train_PPL+AllPPX \
         --mem=950G \
         --time=24:00:00 \
-        SLURM/train_unet_multi_input.sh -n 7 -s "_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6" -r "PPL+AllPPX" $continue_run $skip_tuning
+        SLURM/train_unet_multi_input.sh \
+        --num-inputs 7 \
+        --image-suffixes "_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6" \
+        --run-name "PPL+AllPPX" \
+        "${resume_args[@]}" \
+        "${skip_tuning_args[@]}"
     submitted=true
 fi
 

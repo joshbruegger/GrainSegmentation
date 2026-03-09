@@ -24,13 +24,14 @@ fi
 
 # Help function
 function usage {
-    echo "Usage: $0 [-n <num_inputs>] [-s <image_suffixes>] [-r <run_name>] [-o <output_model>] [-c] [-t]"
-    echo "  -n <number>: Number of inputs (default: 7)"
-    echo "  -s <string>: Image suffixes separated by spaces (default: '_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6')"
-    echo "  -r <string>: Run name (default: '7in_PPL_AllPPX')"
-    echo "  -o <path>: Output model path (optional)"
-    echo "  -c: Continue/resume from latest model if it exists"
-    echo "  -t: Skip tuning"
+    echo "Usage: $0 [--num-inputs <num_inputs>] [--image-suffixes <image_suffixes>] [--run-name <run_name>] [--output-model <output_model>] [--resume [model_path]] [--skip-tuning]"
+    echo "  --num-inputs <number>: Number of inputs (default: 7)"
+    echo "  --image-suffixes <string>: Image suffixes separated by spaces (default: '_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6')"
+    echo "  --run-name <string>: Run name (default: '7in_PPL_AllPPX')"
+    echo "  --output-model <path>: Output model path (optional)"
+    echo "  --resume [path]: Resume final training from a saved checkpoint (defaults to *_latest.keras)"
+    echo "  --skip-tuning: Skip tuning"
+    echo "  Re-running with the same run name and tuning dir automatically resumes tuner state."
     exit 1
 }
 
@@ -38,20 +39,50 @@ NUM_INPUTS=7
 IMAGE_SUFFIXES="_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6"
 RUN_NAME="7in_PPL_AllPPX"
 OUTPUT_MODEL=""
-CONTINUE_RUN=0
+RESUME_MODEL=""
 SKIP_TUNING_FLAG=""
 FOLDS=2
 
 # Process flags
-while getopts ":n:s:r:o:cht" opt; do
-    case $opt in
-        n) NUM_INPUTS="$OPTARG";;
-        s) IMAGE_SUFFIXES="$OPTARG";;
-        r) RUN_NAME="$OPTARG";;
-        o) OUTPUT_MODEL="$OPTARG";;
-        c) CONTINUE_RUN=1;;
-        t) SKIP_TUNING_FLAG="--skip-tuning"; FOLDS=5;;
-        h|\?) usage;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --num-inputs)
+            NUM_INPUTS="$2"
+            shift 2
+            ;;
+        --image-suffixes)
+            IMAGE_SUFFIXES="$2"
+            shift 2
+            ;;
+        --run-name)
+            RUN_NAME="$2"
+            shift 2
+            ;;
+        --output-model)
+            OUTPUT_MODEL="$2"
+            shift 2
+            ;;
+        --resume)
+            if [[ $# -gt 1 && "${2:-}" != -* ]]; then
+                RESUME_MODEL="$2"
+                shift 2
+            else
+                RESUME_MODEL="__LATEST__"
+                shift
+            fi
+            ;;
+        --skip-tuning)
+            SKIP_TUNING_FLAG="--skip-tuning"
+            FOLDS=5
+            shift
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
     esac
 done
 
@@ -82,9 +113,17 @@ uv pip install nvidia-cudnn-cu12~=9.0 nvidia-nccl-cu12 nvidia-cuda-runtime-cu12~
 
 LATEST_MODEL="${OUTPUT_MODEL%.keras}_latest.keras"
 
-if [ "$CONTINUE_RUN" -eq 1 ] && [ -f "$LATEST_MODEL" ]; then
-    CHECKPOINT_ARGS=("--resume" "$LATEST_MODEL")
-    echo "Resuming from latest model: $LATEST_MODEL"
+if [ "$RESUME_MODEL" = "__LATEST__" ]; then
+    RESUME_MODEL="$LATEST_MODEL"
+fi
+
+if [ -n "$RESUME_MODEL" ]; then
+    if [ ! -f "$RESUME_MODEL" ]; then
+        echo "Resume checkpoint not found: $RESUME_MODEL"
+        exit 1
+    fi
+    CHECKPOINT_ARGS=("--resume" "$RESUME_MODEL")
+    echo "Resuming final training from: $RESUME_MODEL"
 else
     CHECKPOINT_ARGS=("--checkpoint" "../../models/pretrained/starting_point.keras")
 fi
@@ -92,7 +131,7 @@ fi
 echo "Running training..."
 uv run --no-sync python -u train_unet_multi_input.py \
     $SKIP_TUNING_FLAG \
-    --run-name "${SLURM_JOB_ID:-local}_${RUN_NAME}" \
+    --run-name "$RUN_NAME" \
     --tuning-dir "$SCRATCH/GrainSeg/tuning_logs" \
     --image-dir "$LOCAL_DIR" \
     --mask-dir "$LOCAL_DIR" \
