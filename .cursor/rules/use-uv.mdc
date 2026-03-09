@@ -1,9 +1,7 @@
 ---
 description: Use `uv` for running Python and managing packages
-globs: **/*.py, pyproject.toml, **/*.sh
 alwaysApply: false
 ---
-
 # Use `uv` for Python and Package Management
 
 This project uses `uv` as the default Python package manager and execution tool. Always prefer `uv` over standard `pip` or `python` commands.

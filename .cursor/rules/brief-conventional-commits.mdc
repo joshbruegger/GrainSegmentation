@@ -1,0 +1,22 @@
+---
+description: Use brief Conventional Commits for commit messages
+alwaysApply: false
+---
+# Use Brief Conventional Commits
+
+When writing commit messages for this project:
+
+- Use Conventional Commits like `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, and `chore:`.
+- Keep the subject brief, specific, and imperative.
+- Prefer a single concise subject line unless extra detail is clearly needed.
+- Avoid vague subjects like `update code` or `misc fixes`.
+
+```bash
+# ❌ BAD
+update training script stuff
+misc fixes
+
+# ✅ GOOD
+fix: handle missing checkpoint path
+test: cover multi-input training arguments
+```

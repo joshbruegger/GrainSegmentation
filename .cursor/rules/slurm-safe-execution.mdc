@@ -1,0 +1,26 @@
+---
+description: Use SLURM-safe commands on the cluster
+alwaysApply: false
+---
+# Use SLURM-Safe Execution
+
+This project runs on an interactive node of a SLURM cluster.
+
+- Do not run long, intensive, or training jobs directly on the current node.
+- Keep direct terminal commands lightweight unless the user clearly wants a quick local check.
+- For substantial work, use `srun` for interactive runs or `sbatch` for scheduled jobs.
+- When GPUs are needed, prefer `--partition=gpu` to use the first available A100 or V100.
+- Request RTX Pro 6000 GPUs only when they are specifically needed, using `--gpus-per-node=rtx_pro_6000:<count>`.
+
+```bash
+# ❌ BAD
+uv run src/training/train.py --epochs 200
+python large_experiment.py
+
+# ✅ GOOD
+srun --partition=gpu --gpus=1 uv run src/training/train.py --epochs 200
+sbatch SLURM/train_unet_multi_input.sh
+
+# ✅ RTX Pro 6000 only when explicitly needed
+srun --partition=gpu --gpus-per-node=rtx_pro_6000:1 uv run script_that_requires_it.py
+```
