@@ -25,9 +25,18 @@ For the PPL + screen-blended PPX model, the 6 PPX images were combined into a si
 
 ### 4. Evaluation
 
-- **Metrics:** Pixel-wise accuracy and grain-centric metrics (IoU/Dice, boundary F1) are reported for each fold and model variant, averaged with confidence intervals.
+- **Metrics:** Recommended evaluation metrics for this project are:
+    - **Boundary IoU:** Best primary boundary metric for this task because the labels include an explicit thin grain-boundary class and boundary quality is central to downstream grain separation.
+    - **Boundary F1:** Useful companion metric with a pixel tolerance to summarize how often predicted boundaries fall close to the annotated boundaries.
+    - **Interior IoU / Dice:** Still needed to measure overall grain-region overlap, since strong boundary scores alone do not guarantee good interior coverage.
+    - **Aggregated Jaccard Index (AJI):** A good instance-aware metric for microscopy-style segmentation because it penalizes grain merges and splits more directly than semantic overlap metrics.
+    - **Optional diagnostics:** Boundary precision/recall, Adapted Rand error, and Variation of Information can help separate false-split and false-merge failure modes when comparing models.
+
+    Pixel accuracy should be treated as secondary because the background class can dominate it. Panoptic Quality (PQ) is also lower priority for this project because microscopy literature has shown that IoU-thresholded panoptic metrics can be hard to interpret for small, boundary-sensitive objects.
 - **Final Test:** Models are trained with tuned hyperparameters on the full training image and evaluated once on a held-out section of the thin-section to measure generalization.
 - **Ablations:** Comparisons between PPL-only, PPL+PPX blend, PPL + all-PPX, and PPL + screen-blend highlight differences in boundary quality and grain separation.
+
+
 
 ## Paper Structure
 
