@@ -2,7 +2,7 @@
 
 # GrainSegmentation
 
-**Objective:** Segment grains in sandstone thin-section microscopy comparing three U-net model inputs: PPL-only baseline, PPL + all PPX images, and PPL + screen-blended PPX composite.
+**Objective:** Segment grains in sandstone thin-section microscopy comparing three U-net model inputs: PPL-only baseline, PPL + all PPX images, and PPL + screen-blended PPX composite, single PPL+PPX composite.
 
 ## Dataset
 
@@ -10,7 +10,7 @@ The dataset consists of one partially-labelled high-resolution thin-section divi
 
 Labels were obtained by running SAM2 on the PPL image using a sliding-window approach and then manually perfecting the labels using QGIS. The final hand-labelled masks were then quality checked by fixing invalid geometries, removing holes and fully-contained features and were then smoothed and buffered by 5 pixels. As the resulting labels contained overlaps, a script was developed to produce non-overlapping grain masks by splitting the overlap at its centre so that previously-overlapping polygons touch along it. Polygon masks were then converted into raster masks with the classes background, grain interior, and grain boundary; the grain boundary were computed to be 3-pixel wide.
 
-For the PPL + screen-blended PPX model, the 6 PPX images were combined into a single 3-channel composite using screen blending (per-pixel `1 - Π(1 - I_k)` on normalized `[0,1]` channels).
+For the PPL + screen-blended PPX model, the 6 PPX images were combined into a single 3-channel composite using screen blending (per-pixel `1 - Π(1 - I_k)` on normalized `[0,1]` channels). The same process, but for all images was used to obtained the PPL_PPX screen-blend composite.
 
 ### Modeling & Training Pipeline
 
@@ -27,7 +27,7 @@ For the PPL + screen-blended PPX model, the 6 PPX images were combined into a si
 
 - **Metrics:** Pixel-wise accuracy and grain-centric metrics (IoU/Dice, boundary F1) are reported for each fold and model variant, averaged with confidence intervals.
 - **Final Test:** Models are trained with tuned hyperparameters on the full training image and evaluated once on a held-out section of the thin-section to measure generalization.
-- **Ablations:** Comparisons between PPL-only, PPL + all-PPX, and PPL + screen-blend highlight differences in boundary quality and grain separation.
+- **Ablations:** Comparisons between PPL-only, PPL+PPX blend, PPL + all-PPX, and PPL + screen-blend highlight differences in boundary quality and grain separation.
 
 ## Paper Structure
 

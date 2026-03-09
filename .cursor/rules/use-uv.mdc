@@ -1,0 +1,50 @@
+---
+description: Use `uv` for running Python and managing packages
+globs: **/*.py, pyproject.toml, **/*.sh
+alwaysApply: false
+---
+
+# Use `uv` for Python and Package Management
+
+This project uses `uv` as the default Python package manager and execution tool. Always prefer `uv` over standard `pip` or `python` commands.
+
+## Running Python Scripts
+
+Use `uv run` to execute Python scripts to ensure they run in the correct environment.
+
+```bash
+# ❌ BAD
+python script.py
+
+# ✅ GOOD
+uv run script.py
+uv run python -u script.py
+```
+
+## Managing Packages
+
+Use `uv` commands to manage dependencies instead of `pip`.
+
+```bash
+# ❌ BAD
+pip install pandas
+pip uninstall pandas
+pip freeze > requirements.txt
+
+# ✅ GOOD
+uv add pandas
+uv remove pandas
+uv sync
+```
+
+## Creating Environments
+
+Rely on `uv venv` for creating virtual environments.
+
+```bash
+# ❌ BAD
+python -m venv .venv
+
+# ✅ GOOD
+uv venv
+```
