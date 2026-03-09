@@ -10,26 +10,26 @@ import tensorflow as tf
 Image.MAX_IMAGE_PIXELS = None
 
 
-def _compute_starts_tf(size: tf.Tensor, patch_size: tf.Tensor, stride: tf.Tensor) -> tf.Tensor:
+def _compute_starts_tf(
+    size: tf.Tensor, patch_size: tf.Tensor, stride: tf.Tensor
+) -> tf.Tensor:
     size = tf.cast(size, tf.int32)
     patch_size = tf.cast(patch_size, tf.int32)
     stride = tf.cast(stride, tf.int32)
-    
+
     def get_starts():
         limit = size - patch_size
         starts = tf.range(0, limit + 1, stride)
         last_start = starts[-1]
-        
+
         return tf.cond(
             tf.equal(last_start, limit),
             lambda: starts,
-            lambda: tf.concat([starts, [limit]], axis=0)
+            lambda: tf.concat([starts, [limit]], axis=0),
         )
-        
+
     return tf.cond(
-        size <= patch_size,
-        lambda: tf.constant([0], dtype=tf.int32),
-        get_starts
+        size <= patch_size, lambda: tf.constant([0], dtype=tf.int32), get_starts
     )
 
 
@@ -89,6 +89,38 @@ def _load_raster_mask(path: str) -> np.ndarray:
     if mask.ndim != 2:
         raise ValueError(f"Raster mask must be 2D: {path}")
     return mask
+
+
+def _validate_loaded_sample(
+    images: List[np.ndarray], mask: np.ndarray, mask_path: str
+) -> None:
+    if not images:
+        raise ValueError("Sample must contain at least one input image.")
+
+    expected_shape = images[0].shape
+    for img in images[1:]:
+        if img.shape != expected_shape:
+            raise ValueError("All input images must share the same shape.")
+
+    image_shape = expected_shape[:2]
+    if mask.shape != image_shape:
+        raise ValueError(
+            f"Mask shape {mask.shape} does not match image shape {image_shape} "
+            f"for {mask_path}"
+        )
+
+
+def _validate_mask_labels(mask: np.ndarray, mask_path: str) -> np.ndarray:
+    mask_int = mask.astype(np.int32)
+    if not np.all(mask == mask_int) or np.any((mask_int < 0) | (mask_int > 2)):
+        raise ValueError(f"Mask values must be in [0, 2] for {mask_path}")
+    return mask_int
+
+
+def _validate_sample_inputs(samples: List[Dict[str, Any]], num_inputs: int) -> None:
+    for sample in samples:
+        if len(sample["images"]) != num_inputs:
+            raise ValueError("Mismatch between num_inputs and loaded images.")
 
 
 def list_samples(
@@ -230,37 +262,46 @@ def build_dataset(
 ) -> tf.data.Dataset:
     if not samples:
         raise ValueError("samples list must not be empty")
-        
+    if patch_size <= 0 or stride <= 0:
+        raise ValueError("patch_size and stride must be > 0")
+    _validate_sample_inputs(samples, num_inputs)
+
     images_list = [s["images"] for s in samples]
     mask_list = [s["mask"] for s in samples]
     region_list = [s.get("region", (0, 0, 0, 0)) for s in samples]
     has_region_list = [("region" in s) for s in samples]
 
-    ds = tf.data.Dataset.from_tensor_slices((
-        images_list, mask_list, region_list, has_region_list
-    ))
-    
-    def _load_sample_py(image_paths_tensor, mask_path_tensor, region_tensor, has_region_tensor):
+    ds = tf.data.Dataset.from_tensor_slices(
+        (images_list, mask_list, region_list, has_region_list)
+    )
+
+    def _load_sample_py(
+        image_paths_tensor, mask_path_tensor, region_tensor, has_region_tensor
+    ):
         image_paths = [p.decode("utf-8") for p in image_paths_tensor.numpy()]
         mask_path = mask_path_tensor.numpy().decode("utf-8")
         region = region_tensor.numpy()
         has_region = has_region_tensor.numpy()
 
+        if len(image_paths) != num_inputs:
+            raise ValueError("Mismatch between num_inputs and loaded images.")
+
         images = [_load_rgb_image(p) for p in image_paths]
         mask = _load_raster_mask(mask_path)
+        _validate_loaded_sample(images, mask, mask_path)
 
         if has_region:
             y0, y1, x0, x1 = region
             images = [img[y0:y1, x0:x1, :] for img in images]
             mask = mask[y0:y1, x0:x1]
-            
-        return tuple(images) + (mask.astype(np.int32),)
+
+        return tuple(images) + (_validate_mask_labels(mask, mask_path),)
 
     def _py_wrapper(image_paths, mask_path, region, has_region):
         res = tf.py_function(
             func=_load_sample_py,
             inp=[image_paths, mask_path, region, has_region],
-            Tout=[tf.float32] * num_inputs + [tf.int32]
+            Tout=[tf.float32] * num_inputs + [tf.int32],
         )
         for i in range(num_inputs):
             res[i].set_shape([None, None, 3])
@@ -272,16 +313,21 @@ def build_dataset(
     def pad_fn(images_tuple, mask):
         shape = tf.shape(mask)
         height, width = shape[0], shape[1]
-        
+
         pad_h = tf.maximum(0, patch_size - height)
         pad_w = tf.maximum(0, patch_size - width)
-        
+
         paddings_img = [[0, pad_h], [0, pad_w], [0, 0]]
         paddings_mask = [[0, pad_h], [0, pad_w]]
-        
-        padded_images = tuple([tf.pad(img, paddings_img, mode='CONSTANT', constant_values=0.0) for img in images_tuple])
-        padded_mask = tf.pad(mask, paddings_mask, mode='CONSTANT', constant_values=0)
-        
+
+        padded_images = tuple(
+            [
+                tf.pad(img, paddings_img, mode="CONSTANT", constant_values=0.0)
+                for img in images_tuple
+            ]
+        )
+        padded_mask = tf.pad(mask, paddings_mask, mode="CONSTANT", constant_values=0)
+
         return padded_images, padded_mask
 
     ds = ds.map(pad_fn, num_parallel_calls=tf.data.AUTOTUNE)
@@ -290,30 +336,42 @@ def build_dataset(
         shape = tf.shape(mask)
         height = shape[0]
         width = shape[1]
-        
-        y_starts = _compute_starts_tf(height, tf.constant(patch_size, dtype=tf.int32), tf.constant(stride, dtype=tf.int32))
-        x_starts = _compute_starts_tf(width, tf.constant(patch_size, dtype=tf.int32), tf.constant(stride, dtype=tf.int32))
-        
-        Y, X = tf.meshgrid(y_starts, x_starts, indexing='ij')
+
+        y_starts = _compute_starts_tf(
+            height,
+            tf.constant(patch_size, dtype=tf.int32),
+            tf.constant(stride, dtype=tf.int32),
+        )
+        x_starts = _compute_starts_tf(
+            width,
+            tf.constant(patch_size, dtype=tf.int32),
+            tf.constant(stride, dtype=tf.int32),
+        )
+
+        Y, X = tf.meshgrid(y_starts, x_starts, indexing="ij")
         coords = tf.stack([tf.reshape(Y, [-1]), tf.reshape(X, [-1])], axis=1)
-        
+
         coord_ds = tf.data.Dataset.from_tensor_slices(coords)
-        
+
         def crop_patch(coord):
             y = coord[0]
             x = coord[1]
-            
-            patch_images = tuple([
-                tf.image.crop_to_bounding_box(img, y, x, patch_size, patch_size)
-                for img in images_tuple
-            ])
-            patch_mask = tf.image.crop_to_bounding_box(tf.expand_dims(mask, -1), y, x, patch_size, patch_size)
+
+            patch_images = tuple(
+                [
+                    tf.image.crop_to_bounding_box(img, y, x, patch_size, patch_size)
+                    for img in images_tuple
+                ]
+            )
+            patch_mask = tf.image.crop_to_bounding_box(
+                tf.expand_dims(mask, -1), y, x, patch_size, patch_size
+            )
             patch_mask = tf.squeeze(patch_mask, axis=-1)
-            
+
             patch_label = tf.one_hot(patch_mask, depth=3, dtype=tf.float32)
-            
+
             return patch_images, patch_label
-            
+
         return coord_ds.map(crop_patch)
 
     ds = ds.flat_map(extract_patches_fn)
