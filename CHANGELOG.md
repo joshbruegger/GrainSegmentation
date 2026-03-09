@@ -1,6 +1,64 @@
 # CHANGELOG
 
 
+## v0.7.0 (2026-03-09)
+
+### Chores
+
+- Remove outdated project reorganization plans
+  ([`ce78630`](https://github.com/joshbruegger/GrainSegmentation/commit/ce7863073bb163e45e18375004b9e343aa4a701d))
+
+- Deleted the project reorganization design and implementation plan documents as they are no longer
+  relevant to the current project structure.
+
+- Update Python version and enhance README documentation
+  ([`3fbe2e6`](https://github.com/joshbruegger/GrainSegmentation/commit/3fbe2e6fcd0b0dcf6d3e34d6b668bf26b1cdce8a))
+
+- Changed Python version from 3.12.3 to 3.12 in the .python-version file. - Updated README to
+  clarify the objective and details of the grain segmentation models, including the addition of the
+  PPL+PPX composite. - Added a new markdown file for using `uv` as the default Python package
+  manager and execution tool. - Modified SLURM script to increase memory allocation and job time for
+  PPL + All PPX training jobs.
+
+### Features
+
+- Enhance data validation and error handling in dataset building
+  ([`f117b41`](https://github.com/joshbruegger/GrainSegmentation/commit/f117b416e2a20e7e3defd4e9b90551aeccaaca12))
+
+- Introduced validation functions to ensure input images and masks meet required conditions,
+  including shape consistency and valid class IDs. - Added error handling for non-positive patch
+  size and stride values. - Updated dataset building logic to incorporate new validation checks,
+  improving robustness and user feedback during data preparation.
+
+- Implement evaluation framework for grain segmentation models
+  ([`435cee2`](https://github.com/joshbruegger/GrainSegmentation/commit/435cee244e73eee425650557bbbdf85ba0375936))
+
+- Added a comprehensive evaluation module including metrics computation (IoU, F1, AJI) and model
+  predictions. - Introduced a script for evaluating trained models on test images, with options for
+  saving predictions and metrics. - Developed a plotting utility for generating quantitative plots
+  and qualitative overlays of model performance. - Enhanced README documentation to detail
+  evaluation metrics and their significance in the context of grain boundary segmentation. -
+  Included unit tests to ensure the correctness of evaluation functions and metrics calculations.
+
+### Refactoring
+
+- Simplify U-Net model configuration and training parameters
+  ([`725c423`](https://github.com/joshbruegger/GrainSegmentation/commit/725c423ccf8b77eaf18466591506ce25f3e0d560))
+
+- Set default base_filters to 16 in the U-Net model to streamline configuration. - Updated batch
+  size handling in the CVTuner class to use a predefined best_batch_size instead of a hyperparameter
+  choice. - Refactored training logic to improve clarity and maintainability, including adjustments
+  to the dataset builder function and model compilation process.
+
+- Update SLURM scripts and training parameters
+  ([`d263aa3`](https://github.com/joshbruegger/GrainSegmentation/commit/d263aa3a6aa19ae74a707945b229a4850bf1b5c5))
+
+- Removed CPU allocation settings from SLURM submission scripts for PPL jobs. - Increased job time
+  limit in the training script from 5 to 12 hours. - Adjusted default folds for cross-validation
+  from 5 to 2 in the training script. - Reduced tuning epochs from 30 to 20 to streamline training
+  process. - Updated maximum hyperparameter tuning trials from 10 to 7 for better efficiency.
+
+
 ## v0.6.0 (2026-03-06)
 
 ### Features
