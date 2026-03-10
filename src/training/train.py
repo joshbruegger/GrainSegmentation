@@ -1,4 +1,6 @@
 import datetime
+import hashlib
+import json
 import math
 import os
 import statistics
@@ -11,6 +13,8 @@ from data import build_dataset, list_samples, create_spatial_cv_folds
 from model import build_unet, initialize_from_checkpoint, weighted_crossentropy
 
 warnings.filterwarnings("ignore", message="Your input ran out of data")
+
+FOLD_CACHE_SCHEMA_VERSION = 1
 
 
 def print_section(title: str) -> None:
@@ -81,6 +85,58 @@ def has_saved_tuner_state(tuning_dir: str, run_name: str, num_inputs: int) -> bo
     return os.path.exists(os.path.join(tuner_state_dir, "oracle.json"))
 
 
+def _fold_cache_scope() -> tuple[str, str]:
+    tmpdir = os.environ.get("TMPDIR", "/tmp")
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id:
+        return tmpdir, job_id
+    return tmpdir, f"local-{os.getpid()}"
+
+
+def _fold_cache_sample_descriptor(samples):
+    descriptors = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            descriptors.append({"value": repr(sample)})
+            continue
+
+        descriptor = {
+            "id": sample.get("id"),
+            "images": list(sample.get("images", ())),
+            "mask": sample.get("mask"),
+        }
+        if "region" in sample:
+            descriptor["region"] = list(sample["region"])
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def build_fold_cache_path(
+    samples,
+    *,
+    role: str,
+    patch_size: int,
+    stride: int,
+    num_inputs: int,
+) -> str:
+    if role not in {"train", "val"}:
+        raise ValueError("role must be 'train' or 'val'")
+
+    tmpdir, cache_scope = _fold_cache_scope()
+    cache_payload = {
+        "schema_version": FOLD_CACHE_SCHEMA_VERSION,
+        "role": role,
+        "patch_size": int(patch_size),
+        "stride": int(stride),
+        "num_inputs": int(num_inputs),
+        "samples": _fold_cache_sample_descriptor(samples),
+    }
+    cache_hash = hashlib.sha256(
+        json.dumps(cache_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return os.path.join(tmpdir, f"tf_cache_{role}_{cache_hash}_{cache_scope}")
+
+
 def find_optimal_batch_size(model_builder, train_dataset_fn, start_batch_size=32):
     batch_size = start_batch_size
     while batch_size >= 1:
@@ -121,14 +177,19 @@ class CVTuner(kt.BayesianOptimization):
         for i, (train_samples, val_samples) in enumerate(cv_folds):
             strategy = tf.distribute.MirroredStrategy()
             global_batch_size = hp_batch_size * strategy.num_replicas_in_sync
-            # Create a unique cache file prefix for each fold and trial
-            tmpdir = os.environ.get("TMPDIR", "/tmp")
-            job_id = os.environ.get("SLURM_JOB_ID", "local")
-            train_cache = os.path.join(
-                tmpdir, f"tf_cache_train_fold{i}_trial{trial.trial_id}_{job_id}"
+            train_cache = build_fold_cache_path(
+                train_samples,
+                role="train",
+                patch_size=patch_size,
+                stride=stride,
+                num_inputs=num_inputs,
             )
-            val_cache = os.path.join(
-                tmpdir, f"tf_cache_val_fold{i}_trial{trial.trial_id}_{job_id}"
+            val_cache = build_fold_cache_path(
+                val_samples,
+                role="val",
+                patch_size=patch_size,
+                stride=patch_size,
+                num_inputs=num_inputs,
             )
 
             train_dataset = build_dataset(
@@ -351,17 +412,23 @@ def estimate_final_epochs_from_cv(
 
     fold_summaries = []
     learning_rate = best_hp.get("learning_rate")
-    tmpdir = os.environ.get("TMPDIR", "/tmp")
-    job_id = os.environ.get("SLURM_JOB_ID", "local")
 
     for fold_index, (train_samples, val_samples) in enumerate(cv_folds, start=1):
         strategy = tf.distribute.MirroredStrategy()
         global_batch_size = best_batch_size * strategy.num_replicas_in_sync
-        train_cache = os.path.join(
-            tmpdir, f"tf_cache_epoch_select_train_fold{fold_index}_{job_id}"
+        train_cache = build_fold_cache_path(
+            train_samples,
+            role="train",
+            patch_size=patch_size,
+            stride=stride,
+            num_inputs=num_inputs,
         )
-        val_cache = os.path.join(
-            tmpdir, f"tf_cache_epoch_select_val_fold{fold_index}_{job_id}"
+        val_cache = build_fold_cache_path(
+            val_samples,
+            role="val",
+            patch_size=patch_size,
+            stride=patch_size,
+            num_inputs=num_inputs,
         )
 
         train_dataset = build_dataset(

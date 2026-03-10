@@ -48,6 +48,11 @@ class _FakeHyperparameters:
         return self.values[key]
 
 
+class _FakeTrialHyperparameters(_FakeHyperparameters):
+    def Float(self, key: str, **_kwargs):
+        return self.values[key]
+
+
 class _FakeHistory:
     def __init__(self, history: dict[str, list[float]]) -> None:
         self.history = history
@@ -57,6 +62,10 @@ class _FakeFoldModel:
     def __init__(self, val_losses: list[float]) -> None:
         self.val_losses = val_losses
         self.fit_calls: list[dict] = []
+        self.compile_calls: list[dict] = []
+
+    def compile(self, **kwargs):
+        self.compile_calls.append(kwargs)
 
     def fit(self, train_dataset, **kwargs):
         self.fit_calls.append({"train_dataset": train_dataset, **kwargs})
@@ -65,6 +74,7 @@ class _FakeFoldModel:
 
 def _install_training_import_stubs() -> None:
     np_module = types.ModuleType("numpy")
+    np_module.mean = lambda values: sum(values) / len(values)
     tf_module = types.ModuleType("tensorflow")
     tf_module.errors = SimpleNamespace(ResourceExhaustedError=RuntimeError)
     tf_module.config = SimpleNamespace(
@@ -233,6 +243,200 @@ class TrainHelperTests(unittest.TestCase):
         )
         self.assertEqual(tuner.init_kwargs["project_name"], "unet_tuning")
         self.assertFalse(tuner.init_kwargs["overwrite"])
+
+    def test_build_fold_cache_path_tracks_fold_contents_and_geometry(self) -> None:
+        _install_training_import_stubs()
+        train = _reload_module("train")
+        samples = [
+            {
+                "id": "tile-a",
+                "images": ["a_PPL.tif", "a_PPX1.tif"],
+                "mask": "a_labels.tif",
+                "region": (0, 256, 0, 256),
+            }
+        ]
+
+        with (
+            patch.dict(train.os.environ, {"TMPDIR": "/tmp/cache-tests"}, clear=True),
+            patch.object(train.os, "getpid", return_value=4321),
+        ):
+            cache_path = train.build_fold_cache_path(
+                samples,
+                role="train",
+                patch_size=256,
+                stride=128,
+                num_inputs=2,
+            )
+            same_cache_path = train.build_fold_cache_path(
+                list(samples),
+                role="train",
+                patch_size=256,
+                stride=128,
+                num_inputs=2,
+            )
+            different_stride_cache = train.build_fold_cache_path(
+                samples,
+                role="train",
+                patch_size=256,
+                stride=256,
+                num_inputs=2,
+            )
+            different_sample_cache = train.build_fold_cache_path(
+                [{**samples[0], "mask": "b_labels.tif"}],
+                role="train",
+                patch_size=256,
+                stride=128,
+                num_inputs=2,
+            )
+
+        self.assertEqual(cache_path, same_cache_path)
+        self.assertNotEqual(cache_path, different_stride_cache)
+        self.assertNotEqual(cache_path, different_sample_cache)
+        self.assertNotIn("trial", cache_path)
+        self.assertIn("local-4321", cache_path)
+
+    def test_cv_tuner_run_trial_reuses_fold_caches_across_trials(self) -> None:
+        _install_training_import_stubs()
+        train = _reload_module("train")
+        tuner = train.CVTuner()
+        tuner.hypermodel = SimpleNamespace(
+            build=lambda _hp: _FakeFoldModel([1.5, 1.2, 1.3])
+        )
+
+        def build_dataset_side_effect(*_args, **kwargs):
+            return [object(), object()] if kwargs["augment"] else [object()]
+
+        with (
+            patch.object(
+                train, "build_dataset", side_effect=build_dataset_side_effect
+            ) as build_dataset,
+            patch.object(
+                train.tf.keras.callbacks,
+                "EarlyStopping",
+                side_effect=lambda **kwargs: ("early-stopping", kwargs),
+            ),
+            patch.dict(
+                train.os.environ,
+                {"TMPDIR": "/tmp/cache-tests", "SLURM_JOB_ID": "12345"},
+                clear=False,
+            ),
+        ):
+            trial_one = SimpleNamespace(
+                trial_id="001",
+                hyperparameters=_FakeTrialHyperparameters(
+                    {"dropout": 0.2, "learning_rate": 1e-3}
+                ),
+            )
+            trial_two = SimpleNamespace(
+                trial_id="002",
+                hyperparameters=_FakeTrialHyperparameters(
+                    {"dropout": 0.3, "learning_rate": 5e-4}
+                ),
+            )
+            cv_folds = [(["train-a"], ["val-a"]), (["train-b"], ["val-b"])]
+
+            tuner.run_trial(
+                trial_one,
+                cv_folds=cv_folds,
+                patch_size=256,
+                stride=128,
+                epochs=3,
+                num_inputs=2,
+                best_batch_size=4,
+            )
+            tuner.run_trial(
+                trial_two,
+                cv_folds=cv_folds,
+                patch_size=256,
+                stride=128,
+                epochs=3,
+                num_inputs=2,
+                best_batch_size=4,
+            )
+
+        cache_files = [
+            call.kwargs["cache_file"] for call in build_dataset.call_args_list
+        ]
+        first_trial_caches = cache_files[:4]
+        second_trial_caches = cache_files[4:]
+
+        self.assertEqual(first_trial_caches, second_trial_caches)
+        self.assertNotEqual(first_trial_caches[0], first_trial_caches[1])
+        self.assertNotEqual(first_trial_caches[0], first_trial_caches[2])
+        self.assertNotIn("trial", first_trial_caches[0])
+        self.assertTrue(build_dataset.call_args_list[0].kwargs["augment"])
+        self.assertFalse(build_dataset.call_args_list[1].kwargs["augment"])
+
+    def test_estimate_final_epochs_from_cv_reuses_tuning_fold_caches(self) -> None:
+        _install_training_import_stubs()
+        train = _reload_module("train")
+        tuner = train.CVTuner()
+        tuner.hypermodel = SimpleNamespace(
+            build=lambda _hp: _FakeFoldModel([1.4, 1.0, 1.2])
+        )
+        best_hp = _FakeTrialHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
+
+        def build_dataset_side_effect(*_args, **kwargs):
+            return [object(), object()] if kwargs["augment"] else [object()]
+
+        with (
+            patch.object(
+                train, "build_dataset", side_effect=build_dataset_side_effect
+            ) as build_dataset,
+            patch.object(
+                train,
+                "build_model_for_tuning",
+                return_value=_FakeFoldModel([1.4, 1.0, 1.2]),
+            ),
+            patch.object(
+                train,
+                "compile_model_for_training",
+                side_effect=lambda model, learning_rate: model,
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "EarlyStopping",
+                side_effect=lambda **kwargs: ("early-stopping", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ReduceLROnPlateau",
+                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
+            ),
+            patch.dict(
+                train.os.environ,
+                {"TMPDIR": "/tmp/cache-tests", "SLURM_JOB_ID": "12345"},
+                clear=False,
+            ),
+        ):
+            cv_folds = [(["train-a"], ["val-a"])]
+            tuner.run_trial(
+                SimpleNamespace(trial_id="001", hyperparameters=best_hp),
+                cv_folds=cv_folds,
+                patch_size=256,
+                stride=128,
+                epochs=3,
+                num_inputs=2,
+                best_batch_size=4,
+            )
+
+            summary = train.estimate_final_epochs_from_cv(
+                cv_folds=cv_folds,
+                checkpoint_path="start.keras",
+                patch_size=256,
+                stride=128,
+                num_inputs=2,
+                best_batch_size=4,
+                best_hp=best_hp,
+                max_epochs=12,
+                full_steps_per_epoch=2,
+            )
+
+        cache_files = [
+            call.kwargs["cache_file"] for call in build_dataset.call_args_list
+        ]
+        self.assertEqual(cache_files[:2], cache_files[2:])
+        self.assertEqual(summary["selected_final_epochs"], 2)
 
     def test_select_best_epoch_from_history_uses_val_loss_argmin(self) -> None:
         _install_training_import_stubs()
