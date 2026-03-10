@@ -1,6 +1,33 @@
 # CHANGELOG
 
 
+## v0.8.0 (2026-03-10)
+
+### Bug Fixes
+
+- Make training restarts predictable
+  ([`9002951`](https://github.com/joshbruegger/GrainSegmentation/commit/90029513338fc24dfa5ec1822911f6bfbf0be392))
+
+Separate tuner-state recovery from final-model checkpoint resume so interrupted jobs can restart
+  without losing completed trials, and switch the SLURM wrappers to stable long-form flags that
+  point back to the same saved state.
+
+### Chores
+
+- Add guidelines for brief Conventional Commits and SLURM-safe execution
+  ([`d224c71`](https://github.com/joshbruegger/GrainSegmentation/commit/d224c7198cbde8f9b045e967ed82af8815ebe29b))
+
+- Introduced a new markdown file outlining the use of brief Conventional Commits for commit
+  messages, emphasizing clarity and specificity. - Added a markdown file detailing SLURM-safe
+  execution practices, including command usage and GPU allocation recommendations. - Updated
+  existing documentation to reflect the preferred use of `uv` for Python and package management.
+
+### Features
+
+- Filter TensorFlow stderr in SLURM jobs, add --verbose and training summaries
+  ([`29f5677`](https://github.com/joshbruegger/GrainSegmentation/commit/29f56770f952fafc3f4d2681e91c32933684a34b))
+
+
 ## v0.7.0 (2026-03-09)
 
 ### Chores
