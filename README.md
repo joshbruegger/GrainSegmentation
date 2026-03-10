@@ -33,8 +33,9 @@ For the PPL + screen-blended PPX model, the 6 PPX images were combined into a si
     - **Optional diagnostics:** Boundary precision/recall, Adapted Rand error, and Variation of Information can help separate false-split and false-merge failure modes when comparing models.
 
     Pixel accuracy should be treated as secondary because the background class can dominate it. Panoptic Quality (PQ) is also lower priority for this project because microscopy literature has shown that IoU-thresholded panoptic metrics can be hard to interpret for small, boundary-sensitive objects.
-- **Final Test:** Models are trained with tuned hyperparameters on the full training image and evaluated once on a held-out section of the thin-section to measure generalization.
-- **Ablations:** Comparisons between PPL-only, PPL+PPX blend, PPL + all-PPX, and PPL + screen-blend highlight differences in boundary quality and grain separation.
+- **Final Test:** Models are trained with tuned hyperparameters on the full training image and evaluated once on a single held-out section of the thin-section to measure generalization.
+- **Interpretation:** Because the final test set contains only one independent image, test-set evaluation is descriptive rather than inferential. Formal statistical significance testing is not appropriate at the test-set level in this setup.
+- **Ablations:** Comparisons between PPL-only, PPL+PPX blend, PPL + all-PPX, and PPL + screen-blend highlight practical differences in boundary quality and grain separation on the held-out image, but they should be interpreted as case-study style comparisons rather than dataset-level statistical evidence.
 
 
 
@@ -45,7 +46,7 @@ For the PPL + screen-blended PPX model, the 6 PPX images were combined into a si
 - **Dataset & labeling:** Imaging setup, labeling protocol, de-overlap processing, train/val/test split design.
 - **Method:** U-Net architecture, input configurations, screen-blend composite, online patch sampling.
 - **Experiments:** Spatial K-fold protocol, Bayesian hyperparameter search, metrics.
-- **Results:** Quantitative tables/plots + qualitative overlays.
-- **Discussion & limitations:** Generalization to new thin-sections, failure modes.
+- **Results:** Quantitative tables/plots + qualitative overlays, reported descriptively for the held-out test image.
+- **Discussion & limitations:** Generalization to new thin-sections, failure modes, and the limitation that a single held-out test image does not support formal statistical comparison.
 - **Conclusion & future work.**
 
