@@ -1,6 +1,46 @@
 # CHANGELOG
 
 
+## v0.10.0 (2026-03-10)
+
+### Bug Fixes
+
+- Update TensorFlow stderr filter patterns and adjust SLURM job memory allocation
+  ([`fdd175b`](https://github.com/joshbruegger/GrainSegmentation/commit/fdd175b759776b6e6b373b84b4770394e027a2a8))
+
+- Modified the regex pattern for unrecognized features in TensorFlow stderr to improve clarity. -
+  Changed memory allocation parameters in SLURM job submissions to optimize resource usage.
+
+### Chores
+
+- Log frozen CV epoch selection start
+  ([`8c3faa2`](https://github.com/joshbruegger/GrainSegmentation/commit/8c3faa21a6491c6f3de8c02e090b3489b7e3147d))
+
+### Documentation
+
+- Update README to clarify final test evaluation and ablation study interpretation
+  ([`11fbbf1`](https://github.com/joshbruegger/GrainSegmentation/commit/11fbbf1d525a9bce993006872d353fde3874a604))
+
+- Revised the description of the final test to specify that it evaluates a single held-out section,
+  emphasizing the descriptive nature of the results. - Added clarification on the interpretation of
+  ablation study comparisons, highlighting their case-study style rather than statistical evidence.
+  - Updated results and discussion sections to reflect the limitations of using a single test image
+  for formal statistical comparisons.
+
+### Features
+
+- Reuse fold caches during tuning
+  ([`390b542`](https://github.com/joshbruegger/GrainSegmentation/commit/390b5426135e929abed705355b770f82769a8093))
+
+### Refactoring
+
+- Align evaluation reporting with single-image test
+  ([`ea99a5c`](https://github.com/joshbruegger/GrainSegmentation/commit/ea99a5c6ef8fb98f1a0682099afd89964ba19ec8))
+
+Make one-sample evaluation outputs descriptive so the JSON and plots no longer imply aggregate or
+  inferential comparisons that the test setup cannot support.
+
+
 ## v0.9.0 (2026-03-10)
 
 ### Features
