@@ -90,6 +90,30 @@ def compute_ci(data, confidence=0.95):
     return h
 
 
+def _load_quantitative_metrics(json_files, metrics_to_plot):
+    means = {metric_name: [] for metric_name in metrics_to_plot}
+    cis = {metric_name: [] for metric_name in metrics_to_plot}
+    sample_counts = []
+
+    for jf in json_files:
+        with open(jf, "r") as f:
+            data = json.load(f)
+
+        sample_keys = [k for k in data.keys() if k != "mean"]
+        sample_counts.append(len(sample_keys))
+
+        for metric_name, metric_key in metrics_to_plot.items():
+            vals = [
+                data[sk][metric_key]
+                for sk in sample_keys
+                if not np.isnan(data[sk][metric_key])
+            ]
+            means[metric_name].append(np.mean(vals))
+            cis[metric_name].append(compute_ci(vals))
+
+    return means, cis, sample_counts
+
+
 def generate_quantitative_plot(json_files, labels, output_path):
     metrics_to_plot = {
         "Mask IoU (Interior)": "iou_class_1",
@@ -98,22 +122,8 @@ def generate_quantitative_plot(json_files, labels, output_path):
         "AJI": "aji",
     }
 
-    means = {m: [] for m in metrics_to_plot}
-    cis = {m: [] for m in metrics_to_plot}
-
-    for jf in json_files:
-        with open(jf, "r") as f:
-            data = json.load(f)
-
-        # extract per-sample metrics to compute confidence intervals
-        sample_keys = [k for k in data.keys() if k != "mean"]
-
-        for m_name, m_key in metrics_to_plot.items():
-            vals = [
-                data[sk][m_key] for sk in sample_keys if not np.isnan(data[sk][m_key])
-            ]
-            means[m_name].append(np.mean(vals))
-            cis[m_name].append(compute_ci(vals))
+    means, cis, sample_counts = _load_quantitative_metrics(json_files, metrics_to_plot)
+    single_sample_mode = all(count == 1 for count in sample_counts)
 
     x = np.arange(len(metrics_to_plot))
     width = 0.8 / len(labels)
@@ -124,12 +134,22 @@ def generate_quantitative_plot(json_files, labels, output_path):
         offset = (i - len(labels) / 2 + 0.5) * width
 
         m_means = [means[m][i] for m in metrics_to_plot]
-        m_cis = [cis[m][i] for m in metrics_to_plot]
-
-        ax.bar(x + offset, m_means, width, yerr=m_cis, label=label, capsize=5)
+        if single_sample_mode:
+            ax.bar(x + offset, m_means, width, label=label)
+        else:
+            m_cis = [cis[m][i] for m in metrics_to_plot]
+            ax.bar(x + offset, m_means, width, yerr=m_cis, label=label, capsize=5)
 
     ax.set_ylabel("Score")
-    ax.set_title("Quantitative Ablation Results")
+    if single_sample_mode:
+        ax.set_title(
+            "Quantitative Ablation Results (descriptive single-image comparison)"
+        )
+        print(
+            "Single-sample input detected; plotting descriptive scores without confidence intervals."
+        )
+    else:
+        ax.set_title("Quantitative Ablation Results")
     ax.set_xticks(x)
     ax.set_xticklabels(list(metrics_to_plot.keys()))
     ax.legend()

@@ -1,11 +1,14 @@
+import contextlib
 import importlib
+import io
+import json
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from PIL import Image
@@ -203,6 +206,48 @@ class PlotResultsCliTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 plot_results.main()
 
+    def test_generate_quantitative_plot_omits_error_bars_for_single_sample(
+        self,
+    ) -> None:
+        plot_results = _reload_module("evaluation.plot_results")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "metrics.json"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "heldout_section": {
+                            "iou_class_1": 0.61,
+                            "iou_class_2": 0.42,
+                            "boundary_f1": 0.57,
+                            "aji": 0.38,
+                        }
+                    }
+                )
+            )
+            output_path = Path(tmpdir) / "plot.png"
+
+            fig = object()
+            ax = SimpleNamespace(
+                bar=Mock(),
+                set_ylabel=Mock(),
+                set_title=Mock(),
+                set_xticks=Mock(),
+                set_xticklabels=Mock(),
+                legend=Mock(),
+                grid=Mock(),
+            )
+
+            with patch.object(plot_results.plt, "subplots", return_value=(fig, ax)):
+                with patch.object(plot_results.plt, "tight_layout"):
+                    with patch.object(plot_results.plt, "savefig"):
+                        plot_results.generate_quantitative_plot(
+                            [str(json_path)], ["Baseline"], str(output_path)
+                        )
+
+            self.assertNotIn("yerr", ax.bar.call_args.kwargs)
+            self.assertIn("descriptive", ax.set_title.call_args.args[0].lower())
+
 
 class EvaluateSampleLoadingTests(unittest.TestCase):
     def test_validate_sample_data_rejects_out_of_range_labels(self) -> None:
@@ -214,6 +259,88 @@ class EvaluateSampleLoadingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Mask values must be in \\[0, 2\\]"):
             evaluate._validate_sample_data(images, mask, "mask.png")
+
+
+class EvaluateMainTests(unittest.TestCase):
+    def test_main_uses_descriptive_single_sample_output_contract(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            pred_dir = Path(tmpdir) / "preds"
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--save-predictions-dir",
+                str(pred_dir),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+            ]
+
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate, "list_samples", return_value=[sample]):
+                    with patch.object(
+                        evaluate, "_load_rgb_image", return_value=np.zeros((2, 2, 3))
+                    ):
+                        with patch.object(
+                            evaluate, "_load_raster_mask", return_value=mask
+                        ):
+                            with patch.object(
+                                evaluate,
+                                "predict_full_image",
+                                return_value=(pred, np.zeros((2, 2, 3))),
+                            ):
+                                with patch.object(
+                                    evaluate,
+                                    "compute_semantic_metrics",
+                                    return_value={
+                                        "iou_class_0": 1.0,
+                                        "dice_class_0": 1.0,
+                                        "iou_class_1": 0.75,
+                                        "dice_class_1": 0.86,
+                                        "iou_class_2": 0.5,
+                                        "dice_class_2": 0.67,
+                                    },
+                                ):
+                                    with patch.object(
+                                        evaluate,
+                                        "compute_boundary_f1",
+                                        return_value=0.8,
+                                    ):
+                                        with patch.object(
+                                            evaluate,
+                                            "compute_boundary_iou",
+                                            return_value=0.6,
+                                        ):
+                                            with patch.object(
+                                                evaluate,
+                                                "compute_aji",
+                                                return_value=0.7,
+                                            ):
+                                                with contextlib.redirect_stdout(stdout):
+                                                    evaluate.main()
+
+            saved = json.loads(output_json.read_text())
+            self.assertIn("heldout_section", saved)
+            self.assertNotIn("mean", saved)
+            self.assertEqual(saved["heldout_section"]["boundary_f1"], 0.8)
+            self.assertTrue((pred_dir / "heldout_section_pred.png").exists())
+            self.assertIn("descriptive", stdout.getvalue().lower())
 
 
 if __name__ == "__main__":

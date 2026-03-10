@@ -116,6 +116,37 @@ def _validate_sample_data(
     return mask_int
 
 
+def _compute_mean_metrics(all_metrics: list[dict[str, float]]) -> dict[str, float]:
+    mean_metrics = {}
+    for key in all_metrics[0].keys():
+        values = [metrics[key] for metrics in all_metrics if not np.isnan(metrics[key])]
+        mean_metrics[key] = float(np.mean(values)) if values else float("nan")
+    return mean_metrics
+
+
+def _build_results_payload(
+    sample_results: dict[str, dict[str, float]], all_metrics: list[dict[str, float]]
+) -> dict[str, dict[str, float]]:
+    results = dict(sample_results)
+    if len(all_metrics) > 1:
+        results["mean"] = _compute_mean_metrics(all_metrics)
+    return results
+
+
+def _print_summary(results: dict[str, dict[str, float]], sample_count: int) -> None:
+    if sample_count == 1:
+        print("\n--- Single-Sample Evaluation ---")
+        print(
+            "Descriptive only: one evaluation sample found; skipping aggregate mean metrics."
+        )
+        return
+
+    mean_metrics = results["mean"]
+    print("\n--- Mean Metrics ---")
+    for key, value in mean_metrics.items():
+        print(f"{key}: {value:.4f}")
+
+
 def main():
     args = parse_args()
 
@@ -199,17 +230,8 @@ def main():
             f"Metrics for {sample_id}: IoU_Int: {metrics['iou_class_1']:.4f}, IoU_Bnd: {metrics['iou_class_2']:.4f}, Bnd_F1: {bnd_f1:.4f}, AJI: {aji:.4f}"
         )
 
-    # Compute means
-    mean_metrics = {}
-    for k in all_metrics[0].keys():
-        values = [m[k] for m in all_metrics if not np.isnan(m[k])]
-        mean_metrics[k] = float(np.mean(values)) if values else float("nan")
-
-    results["mean"] = mean_metrics
-
-    print("\n--- Mean Metrics ---")
-    for k, v in mean_metrics.items():
-        print(f"{k}: {v:.4f}")
+    results = _build_results_payload(results, all_metrics)
+    _print_summary(results, len(all_metrics))
 
     # Save to JSON
     with open(args.output_json, "w") as f:
