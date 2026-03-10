@@ -59,14 +59,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100,
+        default=200,
         help=(
-            "Maximum epochs for final training. Tuned runs use a frozen-CV pass "
-            "to choose a final epoch count up to this cap."
+            "Maximum epochs for training with validation-based stopping on the "
+            "fixed spatial validation holdout."
         ),
     )
     parser.add_argument(
-        "--tune-epochs", type=int, default=20, help="Max epochs per tuning trial"
+        "--tune-epochs",
+        type=int,
+        default=30,
+        help="Max epochs per tuning trial on the fixed spatial validation holdout",
     )
     parser.add_argument(
         "--run-name",
@@ -101,15 +104,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of input images (1=PPL, 2=PPL+composite, 7=PPL+all PPX).",
     )
     parser.add_argument(
-        "--folds",
-        type=int,
-        default=2,
-        help="Number of spatial folds for cross-validation",
+        "--validation-fraction",
+        type=float,
+        default=0.2,
+        help="Fraction of spatial regions reserved for the validation holdout.",
     )
     parser.add_argument(
         "--max-trials",
         type=int,
-        default=7,
+        default=20,
         help="Maximum number of hyperparameter tuning trials",
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -133,7 +136,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--skip-tuning",
         action="store_true",
-        help="Skip hyperparameter tuning and use sensible defaults",
+        help="Skip hyperparameter search and use defaults on the same validation holdout",
     )
     return parser.parse_args(argv)
 
@@ -148,6 +151,8 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--split-tile-size must be >= 0")
     if args.patch_overlap < 0 or args.patch_overlap >= 1:
         raise ValueError("--patch-overlap must be in [0, 1).")
+    if args.validation_fraction <= 0 or args.validation_fraction >= 1:
+        raise ValueError("--validation-fraction must be in (0, 1).")
 
     current_dir = os.path.dirname(__file__)
     sys.path.append(current_dir)
@@ -174,7 +179,7 @@ def main(argv: list[str] | None = None) -> None:
         num_inputs=args.num_inputs,
         run_name=args.run_name,
         tuning_dir=args.tuning_dir,
-        n_splits=args.folds,
+        validation_fraction=args.validation_fraction,
         random_state=args.seed,
         use_mixed_precision=not args.no_mixed_precision,
         max_trials=args.max_trials,

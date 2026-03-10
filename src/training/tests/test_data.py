@@ -1,9 +1,21 @@
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+import types
 
 import numpy as np
 from PIL import Image
+
+try:
+    import tensorflow  # noqa: F401
+except ModuleNotFoundError:
+    tf_stub = types.ModuleType("tensorflow")
+    tf_stub.Tensor = object
+    tf_stub.int32 = "int32"
+    tf_stub.float32 = "float32"
+    tf_stub.data = types.SimpleNamespace(Dataset=object, AUTOTUNE=object())
+    sys.modules["tensorflow"] = tf_stub
 
 import data
 
@@ -205,6 +217,149 @@ class BuildDatasetValidationTests(unittest.TestCase):
                     augment=False,
                     num_inputs=2,
                 )
+
+
+class SpatialHoldoutSplitTests(unittest.TestCase):
+    def _create_region_samples(self, tmp_path: Path) -> list[dict]:
+        samples = []
+        for idx, values in enumerate(
+            (
+                np.array(
+                    [
+                        [0, 0, 1, 1],
+                        [0, 0, 1, 1],
+                        [2, 2, 0, 0],
+                        [2, 2, 0, 0],
+                    ],
+                    dtype=np.uint8,
+                ),
+                np.array(
+                    [
+                        [0, 1, 1, 2],
+                        [0, 1, 1, 2],
+                        [0, 0, 2, 2],
+                        [0, 0, 2, 2],
+                    ],
+                    dtype=np.uint8,
+                ),
+            ),
+            start=1,
+        ):
+            image_path = tmp_path / f"sample{idx}_PPL.png"
+            mask_path = tmp_path / f"sample{idx}_labels.png"
+            _write_rgb(image_path, (4, 4))
+            _write_mask(mask_path, values)
+            samples.append(
+                {
+                    "id": f"sample-{idx}",
+                    "images": [str(image_path)],
+                    "mask": str(mask_path),
+                }
+            )
+        return samples
+
+    def test_create_spatial_holdout_split_is_deterministic_for_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples = self._create_region_samples(Path(tmpdir))
+
+            first = data.create_spatial_holdout_split(
+                samples=samples,
+                tile_size=2,
+                validation_fraction=0.25,
+                random_state=42,
+                coverage_bins=4,
+            )
+            second = data.create_spatial_holdout_split(
+                samples=samples,
+                tile_size=2,
+                validation_fraction=0.25,
+                random_state=42,
+                coverage_bins=4,
+            )
+
+        self.assertEqual(first, second)
+
+    def test_create_spatial_holdout_split_returns_disjoint_complete_partition(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples = self._create_region_samples(Path(tmpdir))
+            train_samples, val_samples = data.create_spatial_holdout_split(
+                samples=samples,
+                tile_size=2,
+                validation_fraction=0.25,
+                random_state=7,
+                coverage_bins=4,
+            )
+
+        train_regions = {
+            (sample["id"], tuple(sample["region"])) for sample in train_samples
+        }
+        val_regions = {
+            (sample["id"], tuple(sample["region"])) for sample in val_samples
+        }
+
+        self.assertFalse(train_regions & val_regions)
+        self.assertEqual(len(train_regions) + len(val_regions), 8)
+
+    def test_create_spatial_holdout_split_reserves_requested_fraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples = self._create_region_samples(Path(tmpdir))
+            train_samples, val_samples = data.create_spatial_holdout_split(
+                samples=samples,
+                tile_size=2,
+                validation_fraction=0.25,
+                random_state=1,
+                coverage_bins=4,
+            )
+
+        self.assertEqual(len(val_samples), 2)
+        self.assertEqual(len(train_samples), 6)
+
+    def test_create_spatial_holdout_split_keeps_low_coverage_regions_in_train(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            samples = []
+            masks = [
+                np.full((10, 10), 1, dtype=np.uint8),
+                np.full((10, 10), 2, dtype=np.uint8),
+                np.pad(
+                    np.array([[1]], dtype=np.uint8),
+                    pad_width=((0, 9), (0, 9)),
+                    mode="constant",
+                    constant_values=0,
+                ),
+            ]
+
+            for idx, mask_values in enumerate(masks, start=1):
+                image_path = tmp_path / f"holdout{idx}_PPL.png"
+                mask_path = tmp_path / f"holdout{idx}_labels.png"
+                _write_rgb(image_path, (10, 10))
+                _write_mask(mask_path, mask_values)
+                samples.append(
+                    {
+                        "id": f"holdout-{idx}",
+                        "images": [str(image_path)],
+                        "mask": str(mask_path),
+                    }
+                )
+
+            train_samples, val_samples = data.create_spatial_holdout_split(
+                samples=samples,
+                tile_size=10,
+                validation_fraction=0.5,
+                random_state=0,
+                coverage_bins=4,
+            )
+
+        train_ids = {sample["id"] for sample in train_samples}
+        val_ids = {sample["id"] for sample in val_samples}
+
+        self.assertIn("holdout-3", train_ids)
+        self.assertNotIn("holdout-3", val_ids)
+        self.assertEqual(len(val_samples), 1)
 
 
 if __name__ == "__main__":

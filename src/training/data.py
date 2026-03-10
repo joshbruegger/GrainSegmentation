@@ -1,13 +1,14 @@
+import math
 import os
 from glob import glob
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import rotate, shift
 import tensorflow as tf
 
 Image.MAX_IMAGE_PIXELS = None
+MIN_VALIDATION_COVERAGE = 0.10
 
 
 def _compute_starts_tf(
@@ -192,15 +193,9 @@ def _grid_regions(
     return regions
 
 
-def create_spatial_cv_folds(
-    samples: List[Dict[str, Any]],
-    tile_size: int,
-    n_splits: int,
-    random_state: int,
-    coverage_bins: int,
-) -> List[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
-    from sklearn.model_selection import StratifiedKFold, KFold
-
+def _build_region_samples_and_coverages(
+    samples: List[Dict[str, Any]], tile_size: int
+) -> Tuple[List[Dict[str, Any]], np.ndarray]:
     if tile_size <= 0:
         raise ValueError("tile_size must be > 0")
 
@@ -222,27 +217,124 @@ def create_spatial_cv_folds(
             region_samples.append(region_sample)
 
     coverages_arr = np.array(coverages, dtype=np.float32)
+    return region_samples, coverages_arr
+
+
+def _build_coverage_bin_ids(
+    coverages_arr: np.ndarray,
+    *,
+    coverage_bins: int,
+    group_count: int,
+) -> np.ndarray:
+    total = coverages_arr.shape[0]
+    if total <= 0:
+        raise ValueError("At least one region is required for splitting.")
+
+    if group_count <= 0:
+        raise ValueError("group_count must be > 0")
+
+    bins = min(coverage_bins, max(1, total // group_count))
+    if bins <= 1:
+        return np.zeros(total, dtype=int)
+
+    bin_edges = np.quantile(coverages_arr, np.linspace(0.0, 1.0, bins + 1))
+    if np.allclose(bin_edges, bin_edges[0]):
+        return np.zeros(total, dtype=int)
+
+    return np.digitize(coverages_arr, bin_edges[1:-1], right=True)
+
+
+def create_spatial_holdout_split(
+    samples: List[Dict[str, Any]],
+    tile_size: int,
+    validation_fraction: float,
+    random_state: int,
+    coverage_bins: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
+
+    if validation_fraction <= 0 or validation_fraction >= 1:
+        raise ValueError("validation_fraction must be in (0, 1).")
+
+    region_samples, coverages_arr = _build_region_samples_and_coverages(
+        samples, tile_size
+    )
+    eligible_mask = coverages_arr >= MIN_VALIDATION_COVERAGE
+    train_only_mask = ~eligible_mask
+    eligible_indices = np.flatnonzero(eligible_mask)
+    train_only_indices = np.flatnonzero(train_only_mask)
+    total = eligible_indices.shape[0]
+
+    if total < 2:
+        raise ValueError(
+            "Not enough validation-eligible regions "
+            f"({total}) to create a train/validation split."
+        )
+
+    val_count = math.ceil(total * validation_fraction)
+    val_count = max(1, min(val_count, total - 1))
+    group_count = max(2, math.ceil(1 / validation_fraction))
+    bin_ids = _build_coverage_bin_ids(
+        coverages_arr[eligible_indices],
+        coverage_bins=coverage_bins,
+        group_count=group_count,
+    )
+
+    counts = np.bincount(bin_ids)
+    can_stratify = (
+        counts.min() >= 2
+        and np.count_nonzero(counts) <= val_count
+        and np.count_nonzero(counts) <= (total - val_count)
+    )
+    if can_stratify:
+        splitter = StratifiedShuffleSplit(
+            n_splits=1, test_size=val_count, random_state=random_state
+        )
+    else:
+        splitter = ShuffleSplit(
+            n_splits=1, test_size=val_count, random_state=random_state
+        )
+
+    train_idx, val_idx = next(splitter.split(np.zeros(total), bin_ids))
+    selected_train_indices = eligible_indices[train_idx]
+    selected_val_indices = eligible_indices[val_idx]
+    train_samples = [region_samples[i] for i in selected_train_indices]
+    train_samples.extend(region_samples[i] for i in train_only_indices)
+    val_samples = [region_samples[i] for i in selected_val_indices]
+    return train_samples, val_samples
+
+
+def create_spatial_cv_folds(
+    samples: List[Dict[str, Any]],
+    tile_size: int,
+    n_splits: int,
+    random_state: int,
+    coverage_bins: int,
+) -> List[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    from sklearn.model_selection import StratifiedKFold, KFold
+
+    region_samples, coverages_arr = _build_region_samples_and_coverages(
+        samples, tile_size
+    )
     total = coverages_arr.shape[0]
 
     if total < n_splits:
         raise ValueError(f"Not enough regions ({total}) for {n_splits} splits.")
 
-    bins = min(coverage_bins, max(1, total // n_splits))
-    bin_edges = np.quantile(coverages_arr, np.linspace(0.0, 1.0, bins + 1))
-    if np.allclose(bin_edges, bin_edges[0]):
-        bin_ids = np.zeros(total, dtype=int)
-    else:
-        bin_ids = np.digitize(coverages_arr, bin_edges[1:-1], right=True)
+    bin_ids = _build_coverage_bin_ids(
+        coverages_arr,
+        coverage_bins=coverage_bins,
+        group_count=n_splits,
+    )
 
-    counts = np.bincount(bin_ids)
-    if counts.min() < n_splits:
+    folds = []
+    if np.bincount(bin_ids).min() < n_splits:
         cv = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         splits = cv.split(np.zeros(total))
     else:
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         splits = cv.split(np.zeros(total), bin_ids)
 
-    folds = []
     for train_idx, val_idx in splits:
         train_samples_fold = [region_samples[i] for i in train_idx]
         val_samples_fold = [region_samples[i] for i in val_idx]

@@ -35,7 +35,7 @@ function usage {
     echo "  --resume [path]: Resume final training from a saved checkpoint (defaults to *_latest.keras)"
     echo "  --skip-tuning: Skip tuning"
     echo "  --verbose: Disable stderr filtering and keep raw TensorFlow/XLA diagnostics"
-    echo "  Tuned runs choose final epochs with a frozen-CV pass, capped by the training script's --epochs setting."
+    echo "  Tuned runs use a fixed 20% spatial validation holdout for tuning and final training."
     echo "  Re-running with the same run name and tuning dir automatically resumes tuner state."
     exit 1
 }
@@ -46,7 +46,7 @@ RUN_NAME="7in_PPL_AllPPX"
 OUTPUT_MODEL=""
 RESUME_MODEL=""
 SKIP_TUNING_FLAG=""
-FOLDS=2
+VALIDATION_FRACTION="0.2"
 VERBOSE=false
 
 # Process flags
@@ -79,7 +79,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-tuning)
             SKIP_TUNING_FLAG="--skip-tuning"
-            FOLDS=5
             shift
             ;;
         --verbose)
@@ -151,13 +150,12 @@ TRAIN_CMD+=(
     --tuning-dir "$SCRATCH/GrainSeg/tuning_logs"
     --image-dir "$LOCAL_DIR"
     --mask-dir "$LOCAL_DIR"
-    --folds "$FOLDS"
+    --validation-fraction "$VALIDATION_FRACTION"
     "${CHECKPOINT_ARGS[@]}"
     --output-model "$OUTPUT_MODEL"
     --patch-size 1024
     --patch-overlap 0.5
-    --epochs 100
-    --tune-epochs 20
+    --tune-epochs 50
     --num-inputs "$NUM_INPUTS"
     --image-suffixes
     "${IMAGE_SUFFIX_ARGS[@]}"

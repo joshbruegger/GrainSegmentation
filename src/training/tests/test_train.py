@@ -1,6 +1,7 @@
 import importlib
 import io
 import sys
+import tempfile
 import types
 import unittest
 from contextlib import redirect_stdout
@@ -85,7 +86,7 @@ def _install_training_import_stubs() -> None:
         mixed_precision=SimpleNamespace(set_global_policy=lambda policy: None),
         models=SimpleNamespace(load_model=lambda *args, **kwargs: None),
         callbacks=SimpleNamespace(
-            EarlyStopping=object,
+            EarlyStopping=lambda **kwargs: ("early-stopping", kwargs),
             ReduceLROnPlateau=object,
             ModelCheckpoint=object,
             TensorBoard=object,
@@ -116,6 +117,7 @@ def _install_training_import_stubs() -> None:
     data_module.build_dataset = lambda *args, **kwargs: []
     data_module.list_samples = lambda *args, **kwargs: []
     data_module.create_spatial_cv_folds = lambda *args, **kwargs: []
+    data_module.create_spatial_holdout_split = lambda *args, **kwargs: ([], [])
 
     model_module = types.ModuleType("model")
     model_module.build_unet = lambda *args, **kwargs: "fresh-model"
@@ -236,13 +238,40 @@ class TrainHelperTests(unittest.TestCase):
             tuning_dir="/tmp/tuning",
             run_name="stable_run",
             num_inputs=7,
+            validation_fraction=0.2,
         )
 
         self.assertEqual(
-            tuner.init_kwargs["directory"], "/tmp/tuning/tuning_stable_run_7in"
+            tuner.init_kwargs["directory"], "/tmp/tuning/tuning_stable_run_7in_val20"
         )
         self.assertEqual(tuner.init_kwargs["project_name"], "unet_tuning")
         self.assertFalse(tuner.init_kwargs["overwrite"])
+
+    def test_has_saved_tuner_state_is_scoped_by_validation_fraction(self) -> None:
+        _install_training_import_stubs()
+        train = _reload_module("train")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oracle_dir = Path(tmpdir) / "tuning_stable_run_7in_val20" / "unet_tuning"
+            oracle_dir.mkdir(parents=True)
+            (oracle_dir / "oracle.json").write_text("{}", encoding="utf-8")
+
+            self.assertTrue(
+                train.has_saved_tuner_state(
+                    tmpdir,
+                    "stable_run",
+                    7,
+                    validation_fraction=0.2,
+                )
+            )
+            self.assertFalse(
+                train.has_saved_tuner_state(
+                    tmpdir,
+                    "stable_run",
+                    7,
+                    validation_fraction=0.3,
+                )
+            )
 
     def test_build_fold_cache_path_tracks_fold_contents_and_geometry(self) -> None:
         _install_training_import_stubs()
@@ -295,7 +324,7 @@ class TrainHelperTests(unittest.TestCase):
         self.assertNotIn("trial", cache_path)
         self.assertIn("local-4321", cache_path)
 
-    def test_cv_tuner_run_trial_reuses_fold_caches_across_trials(self) -> None:
+    def test_cv_tuner_run_trial_reuses_holdout_caches_across_trials(self) -> None:
         _install_training_import_stubs()
         train = _reload_module("train")
         tuner = train.CVTuner()
@@ -333,11 +362,11 @@ class TrainHelperTests(unittest.TestCase):
                     {"dropout": 0.3, "learning_rate": 5e-4}
                 ),
             )
-            cv_folds = [(["train-a"], ["val-a"]), (["train-b"], ["val-b"])]
 
             tuner.run_trial(
                 trial_one,
-                cv_folds=cv_folds,
+                train_samples=["train-a"],
+                val_samples=["val-a"],
                 patch_size=256,
                 stride=128,
                 epochs=3,
@@ -346,7 +375,8 @@ class TrainHelperTests(unittest.TestCase):
             )
             tuner.run_trial(
                 trial_two,
-                cv_folds=cv_folds,
+                train_samples=["train-a"],
+                val_samples=["val-a"],
                 patch_size=256,
                 stride=128,
                 epochs=3,
@@ -357,62 +387,44 @@ class TrainHelperTests(unittest.TestCase):
         cache_files = [
             call.kwargs["cache_file"] for call in build_dataset.call_args_list
         ]
-        first_trial_caches = cache_files[:4]
-        second_trial_caches = cache_files[4:]
+        first_trial_caches = cache_files[:2]
+        second_trial_caches = cache_files[2:]
 
         self.assertEqual(first_trial_caches, second_trial_caches)
         self.assertNotEqual(first_trial_caches[0], first_trial_caches[1])
-        self.assertNotEqual(first_trial_caches[0], first_trial_caches[2])
         self.assertNotIn("trial", first_trial_caches[0])
         self.assertTrue(build_dataset.call_args_list[0].kwargs["augment"])
         self.assertFalse(build_dataset.call_args_list[1].kwargs["augment"])
 
-    def test_estimate_final_epochs_from_cv_reuses_tuning_fold_caches(self) -> None:
+    def test_cv_tuner_run_trial_marks_trial_failed_on_oom(self) -> None:
         _install_training_import_stubs()
         train = _reload_module("train")
         tuner = train.CVTuner()
-        tuner.hypermodel = SimpleNamespace(
-            build=lambda _hp: _FakeFoldModel([1.4, 1.0, 1.2])
+        oom_model = SimpleNamespace(
+            compile=Mock(),
+            fit=Mock(side_effect=train.tf.errors.ResourceExhaustedError("oom")),
         )
-        best_hp = _FakeTrialHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
-
-        def build_dataset_side_effect(*_args, **kwargs):
-            return [object(), object()] if kwargs["augment"] else [object()]
+        tuner.hypermodel = SimpleNamespace(build=lambda _hp: oom_model)
 
         with (
             patch.object(
-                train, "build_dataset", side_effect=build_dataset_side_effect
-            ) as build_dataset,
-            patch.object(
-                train,
-                "build_model_for_tuning",
-                return_value=_FakeFoldModel([1.4, 1.0, 1.2]),
-            ),
-            patch.object(
-                train,
-                "compile_model_for_training",
-                side_effect=lambda model, learning_rate: model,
+                train, "build_dataset", side_effect=[[object(), object()], [object()]]
             ),
             patch.object(
                 train.tf.keras.callbacks,
                 "EarlyStopping",
                 side_effect=lambda **kwargs: ("early-stopping", kwargs),
             ),
-            patch.object(
-                train.tf.keras.callbacks,
-                "ReduceLROnPlateau",
-                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
-            ),
-            patch.dict(
-                train.os.environ,
-                {"TMPDIR": "/tmp/cache-tests", "SLURM_JOB_ID": "12345"},
-                clear=False,
-            ),
         ):
-            cv_folds = [(["train-a"], ["val-a"])]
-            tuner.run_trial(
-                SimpleNamespace(trial_id="001", hyperparameters=best_hp),
-                cv_folds=cv_folds,
+            result = tuner.run_trial(
+                SimpleNamespace(
+                    trial_id="001",
+                    hyperparameters=_FakeTrialHyperparameters(
+                        {"dropout": 0.2, "learning_rate": 1e-3}
+                    ),
+                ),
+                train_samples=["train-a"],
+                val_samples=["val-a"],
                 patch_size=256,
                 stride=128,
                 epochs=3,
@@ -420,160 +432,9 @@ class TrainHelperTests(unittest.TestCase):
                 best_batch_size=4,
             )
 
-            summary = train.estimate_final_epochs_from_cv(
-                cv_folds=cv_folds,
-                checkpoint_path="start.keras",
-                patch_size=256,
-                stride=128,
-                num_inputs=2,
-                best_batch_size=4,
-                best_hp=best_hp,
-                max_epochs=12,
-                full_steps_per_epoch=2,
-            )
+        self.assertEqual(result, {"val_loss": 1e9})
 
-        cache_files = [
-            call.kwargs["cache_file"] for call in build_dataset.call_args_list
-        ]
-        self.assertEqual(cache_files[:2], cache_files[2:])
-        self.assertEqual(summary["selected_final_epochs"], 2)
-
-    def test_select_best_epoch_from_history_uses_val_loss_argmin(self) -> None:
-        _install_training_import_stubs()
-        train = _reload_module("train")
-
-        best_epoch, best_val_loss = train.select_best_epoch_from_history(
-            _FakeHistory({"val_loss": [1.4, 1.1, 1.3]}),
-            monitor="val_loss",
-        )
-
-        self.assertEqual(best_epoch, 2)
-        self.assertEqual(best_val_loss, 1.1)
-
-    def test_summarize_cv_epoch_selection_uses_update_space_and_epoch_cap(self) -> None:
-        _install_training_import_stubs()
-        train = _reload_module("train")
-
-        summary = train.summarize_cv_epoch_selection(
-            fold_summaries=[
-                {"fold_index": 1, "best_epoch": 6, "train_steps_per_epoch": 4},
-                {"fold_index": 2, "best_epoch": 10, "train_steps_per_epoch": 4},
-                {"fold_index": 3, "best_epoch": 20, "train_steps_per_epoch": 4},
-            ],
-            full_steps_per_epoch=8,
-            epoch_cap=4,
-        )
-
-        self.assertEqual(summary["aggregated_updates"], 40)
-        self.assertEqual(summary["unbounded_final_epochs"], 5)
-        self.assertEqual(summary["selected_final_epochs"], 4)
-
-    def test_estimate_final_epochs_from_cv_ignores_resume_checkpoint(self) -> None:
-        _install_training_import_stubs()
-        train = _reload_module("train")
-        best_hp = _FakeHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
-        fold_model = _FakeFoldModel([1.3, 1.1, 1.2])
-
-        with (
-            patch.object(
-                train, "build_dataset", side_effect=[[object(), object()], [object()]]
-            ),
-            patch.object(
-                train,
-                "build_model_for_tuning",
-                side_effect=[fold_model],
-            ) as build_model_for_tuning,
-            patch.object(
-                train,
-                "compile_model_for_training",
-                side_effect=lambda model, learning_rate: model,
-            ),
-            patch.object(
-                train.tf.keras.callbacks,
-                "EarlyStopping",
-                side_effect=lambda **kwargs: ("early-stopping", kwargs),
-            ),
-            patch.object(
-                train.tf.keras.callbacks,
-                "ReduceLROnPlateau",
-                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
-            ),
-        ):
-            summary = train.estimate_final_epochs_from_cv(
-                cv_folds=[(["train"], ["val"])],
-                checkpoint_path="start.keras",
-                patch_size=256,
-                stride=128,
-                num_inputs=2,
-                best_batch_size=4,
-                best_hp=best_hp,
-                max_epochs=12,
-                full_steps_per_epoch=2,
-            )
-
-        self.assertEqual(summary["selected_final_epochs"], 2)
-        self.assertFalse(summary["used_fallback"])
-        self.assertEqual(
-            fold_model.fit_calls[0]["callbacks"][1][0],
-            "reduce-lr",
-        )
-        build_model_for_tuning.assert_called_once_with(
-            checkpoint_path="start.keras",
-            resume_path=None,
-            patch_size=256,
-            num_inputs=2,
-            hp=best_hp,
-        )
-
-    def test_estimate_final_epochs_from_cv_returns_fallback_on_oom(self) -> None:
-        _install_training_import_stubs()
-        train = _reload_module("train")
-        best_hp = _FakeHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
-        oom_model = SimpleNamespace(
-            fit=Mock(side_effect=train.tf.errors.ResourceExhaustedError("oom"))
-        )
-
-        with (
-            patch.object(
-                train, "build_dataset", side_effect=[[object(), object()], [object()]]
-            ),
-            patch.object(
-                train, "build_model_for_tuning", return_value=oom_model
-            ) as build_model_for_tuning,
-            patch.object(
-                train,
-                "compile_model_for_training",
-                side_effect=lambda model, learning_rate: model,
-            ),
-            patch.object(
-                train.tf.keras.callbacks,
-                "EarlyStopping",
-                side_effect=lambda **kwargs: ("early-stopping", kwargs),
-            ),
-            patch.object(
-                train.tf.keras.callbacks,
-                "ReduceLROnPlateau",
-                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
-            ),
-        ):
-            summary = train.estimate_final_epochs_from_cv(
-                cv_folds=[(["train"], ["val"])],
-                checkpoint_path="start.keras",
-                patch_size=256,
-                stride=128,
-                num_inputs=2,
-                best_batch_size=4,
-                best_hp=best_hp,
-                max_epochs=12,
-                full_steps_per_epoch=2,
-            )
-
-        self.assertTrue(summary["used_fallback"])
-        self.assertEqual(summary["selected_final_epochs"], 12)
-        self.assertIn("OOM", summary["fallback_reason"])
-        build_model_for_tuning.assert_called_once()
-
-    def test_train_model_uses_selected_cv_epochs_for_tuned_final_training(self) -> None:
+    def test_train_model_uses_validation_holdout_for_tuned_final_training(self) -> None:
         _install_training_import_stubs()
         train = _reload_module("train")
         best_hp = _FakeHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
@@ -581,10 +442,17 @@ class TrainHelperTests(unittest.TestCase):
             search=Mock(),
             get_best_hyperparameters=Mock(return_value=[best_hp]),
         )
+        final_train_dataset = [object(), object(), object()]
+        final_val_dataset = [object()]
         final_model = SimpleNamespace(fit=Mock(), save=Mock(), optimizer=None)
         buffer = io.StringIO()
 
         with (
+            patch.object(
+                train.tf.keras.callbacks,
+                "EarlyStopping",
+                side_effect=lambda **kwargs: ("early-stopping", kwargs),
+            ),
             patch.object(
                 train.tf.keras.callbacks,
                 "TensorBoard",
@@ -605,27 +473,18 @@ class TrainHelperTests(unittest.TestCase):
             patch.object(train, "list_samples", return_value=["sample-a", "sample-b"]),
             patch.object(
                 train,
-                "create_spatial_cv_folds",
-                return_value=[(["train-a"], ["val-a"]), (["train-b"], ["val-b"])],
-            ),
+                "create_spatial_holdout_split",
+                return_value=(["train-a"], ["val-a"]),
+            ) as create_spatial_holdout_split,
             patch.object(train, "find_optimal_batch_size", return_value=2),
-            patch.object(train, "create_tuner", return_value=tuner),
+            patch.object(train, "create_tuner", return_value=tuner) as create_tuner,
             patch.object(
-                train, "build_dataset", return_value=[object(), object(), object()]
+                train,
+                "build_dataset",
+                side_effect=[final_train_dataset, final_val_dataset],
             ),
             patch.object(train, "build_final_model", return_value=final_model),
             patch.object(train, "compile_model_for_training", return_value=final_model),
-            patch.object(
-                train,
-                "estimate_final_epochs_from_cv",
-                return_value={
-                    "selected_final_epochs": 7,
-                    "aggregated_updates": 21,
-                    "unbounded_final_epochs": 7,
-                    "used_fallback": False,
-                    "fold_summaries": [],
-                },
-            ) as estimate_final_epochs_from_cv,
         ):
             with redirect_stdout(buffer):
                 train.train_model(
@@ -644,23 +503,40 @@ class TrainHelperTests(unittest.TestCase):
                     split_tile_size=256,
                     split_coverage_bins=8,
                     num_inputs=1,
-                    run_name="epoch-selection",
+                    run_name="holdout-training",
                     tuning_dir="/tmp/tuning",
-                    n_splits=2,
+                    validation_fraction=0.2,
                     random_state=42,
                     use_mixed_precision=False,
                     max_trials=3,
                     skip_tuning=False,
                 )
 
-        self.assertEqual(
-            estimate_final_epochs_from_cv.call_args.kwargs["max_epochs"], 100
+        create_spatial_holdout_split.assert_called_once_with(
+            ["sample-a", "sample-b"],
+            tile_size=256,
+            validation_fraction=0.2,
+            random_state=42,
+            coverage_bins=8,
         )
-        self.assertIn("Starting frozen CV epoch selection", buffer.getvalue())
+        self.assertEqual(create_tuner.call_args.kwargs["validation_fraction"], 0.2)
+        tuner.search.assert_called_once()
         final_model.fit.assert_called_once()
-        self.assertEqual(final_model.fit.call_args.kwargs["epochs"], 7)
+        self.assertEqual(final_model.fit.call_args.kwargs["epochs"], 100)
+        self.assertEqual(
+            final_model.fit.call_args.kwargs["validation_data"],
+            final_val_dataset,
+        )
+        self.assertEqual(
+            final_model.fit.call_args.kwargs["callbacks"][0][0], "early-stopping"
+        )
+        self.assertEqual(
+            final_model.fit.call_args.kwargs["callbacks"][0][1]["monitor"], "val_loss"
+        )
+        self.assertIn("monitor_metric         : val_loss", buffer.getvalue())
+        self.assertNotIn("Frozen CV epoch selection", buffer.getvalue())
 
-    def test_train_model_skips_epoch_selection_when_resuming_without_checkpoint(
+    def test_train_model_resuming_without_checkpoint_uses_validation_holdout(
         self,
     ) -> None:
         _install_training_import_stubs()
@@ -670,6 +546,8 @@ class TrainHelperTests(unittest.TestCase):
             search=Mock(),
             get_best_hyperparameters=Mock(return_value=[best_hp]),
         )
+        final_train_dataset = [object(), object(), object()]
+        final_val_dataset = [object()]
         final_model = SimpleNamespace(fit=Mock(), save=Mock(), optimizer=None)
 
         with (
@@ -693,20 +571,19 @@ class TrainHelperTests(unittest.TestCase):
             patch.object(train, "list_samples", return_value=["sample-a", "sample-b"]),
             patch.object(
                 train,
-                "create_spatial_cv_folds",
-                return_value=[(["train-a"], ["val-a"]), (["train-b"], ["val-b"])],
+                "create_spatial_holdout_split",
+                return_value=(["train-a"], ["val-a"]),
             ),
             patch.object(train, "find_optimal_batch_size", return_value=2),
             patch.object(train, "create_tuner", return_value=tuner),
             patch.object(
-                train, "build_dataset", return_value=[object(), object(), object()]
+                train,
+                "build_dataset",
+                side_effect=[final_train_dataset, final_val_dataset],
             ),
             patch.object(train, "build_final_model", return_value=final_model),
             patch.object(train, "compile_model_for_training", return_value=final_model),
             patch.object(train, "infer_initial_epoch", return_value=3),
-            patch.object(
-                train, "estimate_final_epochs_from_cv"
-            ) as estimate_final_epochs_from_cv,
         ):
             train.train_model(
                 image_dir="images",
@@ -724,20 +601,23 @@ class TrainHelperTests(unittest.TestCase):
                 split_tile_size=256,
                 split_coverage_bins=8,
                 num_inputs=1,
-                run_name="epoch-selection",
+                run_name="holdout-training",
                 tuning_dir="/tmp/tuning",
-                n_splits=2,
+                validation_fraction=0.2,
                 random_state=42,
                 use_mixed_precision=False,
                 max_trials=3,
                 skip_tuning=False,
             )
 
-        estimate_final_epochs_from_cv.assert_not_called()
         final_model.fit.assert_called_once()
         self.assertEqual(final_model.fit.call_args.kwargs["epochs"], 100)
+        self.assertEqual(
+            final_model.fit.call_args.kwargs["validation_data"],
+            final_val_dataset,
+        )
 
-    def test_train_model_skips_fit_when_resume_already_meets_selected_epochs(
+    def test_train_model_skips_fit_when_resume_already_meets_epoch_budget(
         self,
     ) -> None:
         _install_training_import_stubs()
@@ -747,6 +627,8 @@ class TrainHelperTests(unittest.TestCase):
             search=Mock(),
             get_best_hyperparameters=Mock(return_value=[best_hp]),
         )
+        final_train_dataset = [object(), object(), object()]
+        final_val_dataset = [object()]
         final_model = SimpleNamespace(fit=Mock(), save=Mock(), optimizer=None)
 
         with (
@@ -770,28 +652,19 @@ class TrainHelperTests(unittest.TestCase):
             patch.object(train, "list_samples", return_value=["sample-a", "sample-b"]),
             patch.object(
                 train,
-                "create_spatial_cv_folds",
-                return_value=[(["train-a"], ["val-a"]), (["train-b"], ["val-b"])],
+                "create_spatial_holdout_split",
+                return_value=(["train-a"], ["val-a"]),
             ),
             patch.object(train, "find_optimal_batch_size", return_value=2),
             patch.object(train, "create_tuner", return_value=tuner),
             patch.object(
-                train, "build_dataset", return_value=[object(), object(), object()]
+                train,
+                "build_dataset",
+                side_effect=[final_train_dataset, final_val_dataset],
             ),
             patch.object(train, "build_final_model", return_value=final_model),
             patch.object(train, "compile_model_for_training", return_value=final_model),
-            patch.object(train, "infer_initial_epoch", return_value=7),
-            patch.object(
-                train,
-                "estimate_final_epochs_from_cv",
-                return_value={
-                    "selected_final_epochs": 7,
-                    "aggregated_updates": 21,
-                    "unbounded_final_epochs": 7,
-                    "used_fallback": False,
-                    "fold_summaries": [],
-                },
-            ),
+            patch.object(train, "infer_initial_epoch", return_value=100),
         ):
             train.train_model(
                 image_dir="images",
@@ -809,9 +682,9 @@ class TrainHelperTests(unittest.TestCase):
                 split_tile_size=256,
                 split_coverage_bins=8,
                 num_inputs=1,
-                run_name="epoch-selection",
+                run_name="holdout-training",
                 tuning_dir="/tmp/tuning",
-                n_splits=2,
+                validation_fraction=0.2,
                 random_state=42,
                 use_mixed_precision=False,
                 max_trials=3,

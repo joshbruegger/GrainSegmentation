@@ -28,7 +28,7 @@ def _reload_module(name: str):
 
 
 class TrainCliTests(unittest.TestCase):
-    def test_parse_args_help_describes_epochs_as_tuned_run_cap(self) -> None:
+    def test_parse_args_help_describes_validation_holdout_workflow(self) -> None:
         _install_train_stub([])
         module = _reload_module("train_unet_multi_input")
 
@@ -37,7 +37,7 @@ class TrainCliTests(unittest.TestCase):
             module.parse_args(["--help"])
 
         self.assertEqual(exc_info.exception.code, 0)
-        self.assertIn("frozen-CV pass", buffer.getvalue())
+        self.assertIn("validation holdout", buffer.getvalue())
 
     def test_parse_args_accepts_resume_flag(self) -> None:
         _install_train_stub([])
@@ -100,6 +100,27 @@ class TrainCliTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["resume_path"], "latest.keras")
+
+    def test_main_passes_validation_fraction_to_train_model(self) -> None:
+        calls: list[dict] = []
+        _install_train_stub(calls)
+        module = _reload_module("train_unet_multi_input")
+
+        module.main(
+            [
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-model",
+                "model.keras",
+                "--validation-fraction",
+                "0.2",
+            ]
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["validation_fraction"], 0.2)
 
 
 if __name__ == "__main__":

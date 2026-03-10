@@ -67,6 +67,7 @@ class SlurmScriptTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertIn("sync", uv_log.read_text(encoding="utf-8"))
+            self.assertIn("--validation-fraction", uv_log.read_text(encoding="utf-8"))
 
     def test_submit_experiments_forwards_verbose_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -109,7 +110,7 @@ class SlurmScriptTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("--verbose", result.stdout)
-        self.assertIn("frozen-CV pass", result.stdout)
+        self.assertIn("validation holdout", result.stdout)
 
 
 if __name__ == "__main__":
