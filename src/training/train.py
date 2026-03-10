@@ -1,3 +1,4 @@
+import datetime
 import os
 import numpy as np
 import tensorflow as tf
@@ -8,6 +9,74 @@ from data import build_dataset, list_samples, create_spatial_cv_folds
 from model import build_unet, initialize_from_checkpoint, weighted_crossentropy
 
 warnings.filterwarnings("ignore", message="Your input ran out of data")
+
+
+def print_section(title: str) -> None:
+    border = "=" * 80
+    print(f"\n{border}")
+    print(title)
+    print(border)
+
+
+def print_key_values(items) -> None:
+    entries = list(items.items()) if hasattr(items, "items") else list(items)
+    if not entries:
+        return
+
+    key_width = max(len(str(key)) for key, _ in entries)
+    for key, value in entries:
+        print(f"{key:<{key_width}} : {value}")
+
+
+def summarize_training_sources(samples):
+    grouped_sources = []
+    source_index = {}
+
+    for sample in samples:
+        sample_id = sample.get("id", f"sample_{len(grouped_sources) + 1}")
+        image_paths = tuple(sample.get("images", ()))
+        source_key = (sample_id, image_paths)
+
+        if source_key not in source_index:
+            source_index[source_key] = len(grouped_sources)
+            grouped_sources.append(
+                {
+                    "id": sample_id,
+                    "images": list(image_paths),
+                    "region_count": 0,
+                }
+            )
+
+        if "region" in sample:
+            grouped_sources[source_index[source_key]]["region_count"] += 1
+
+    return grouped_sources
+
+
+def print_training_image_paths(samples, title: str) -> None:
+    grouped_sources = summarize_training_sources(samples)
+    print_section(title)
+    print_key_values(
+        [
+            ("total_entries", len(samples)),
+            ("unique_source_samples", len(grouped_sources)),
+        ]
+    )
+    for sample_index, sample in enumerate(grouped_sources, start=1):
+        print(f"Sample {sample_index}: {sample['id']}")
+        if sample["region_count"] > 0:
+            print(f"  region_count : {sample['region_count']}")
+        for input_index, image_path in enumerate(sample["images"], start=1):
+            print(f"  input[{input_index}] : {image_path}")
+
+
+def has_saved_tuner_state(tuning_dir: str, run_name: str, num_inputs: int) -> bool:
+    tuner_state_dir = os.path.join(
+        tuning_dir,
+        f"tuning_{run_name}_{num_inputs}in",
+        "unet_tuning",
+    )
+    return os.path.exists(os.path.join(tuner_state_dir, "oracle.json"))
 
 
 def find_optimal_batch_size(model_builder, train_dataset_fn, start_batch_size=32):
@@ -238,7 +307,16 @@ def train_model(
         tf.keras.mixed_precision.set_global_policy("mixed_bfloat16")
 
     num_gpus = len(tf.config.list_logical_devices("GPU"))
-    print(f"Number of GPUs: {num_gpus}")
+    print_section("Preparing training pipeline")
+    print_key_values(
+        [
+            ("num_gpus", num_gpus),
+            ("num_inputs", num_inputs),
+            ("patch_size", patch_size),
+            ("stride", stride),
+            ("run_name", run_name),
+        ]
+    )
     num_replicas_in_sync = num_gpus if num_gpus > 0 else 1
 
     samples = list_samples(
@@ -284,6 +362,10 @@ def train_model(
             return compile_model_for_training(model, learning_rate=1e-3)
 
     train_samples_fold0 = cv_folds[0][0]
+    print_training_image_paths(
+        train_samples_fold0,
+        "Training image order for batch-size probe",
+    )
 
     def dataset_builder_fn(bs):
         global_bs = bs * num_replicas_in_sync
@@ -297,16 +379,23 @@ def train_model(
             cache_file=None,  # Don't write to disk for just 1 step tests
         )
 
+    print_section("Testing batch size")
     best_batch_size = find_optimal_batch_size(
         compiled_model_builder, dataset_builder_fn, start_batch_size=32
     )
     print(f"Optimal per-replica batch size found: {best_batch_size}")
     global_batch_size = best_batch_size * num_replicas_in_sync
+    selected_hyperparameters = []
 
     if skip_tuning:
         print("Skipping hyperparameter tuning. Using default settings.")
         train_samples, val_samples = cv_folds[0]
         learning_rate = 1e-3
+        selected_hyperparameters = [("learning_rate", learning_rate)]
+        print_training_image_paths(
+            train_samples,
+            "Training image order for final training",
+        )
 
         tmpdir = os.environ.get("TMPDIR", "/tmp")
         job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -342,6 +431,27 @@ def train_model(
             run_name=run_name,
             num_inputs=num_inputs,
         )
+        tuning_title = (
+            "Resuming tuning"
+            if has_saved_tuner_state(tuning_dir, run_name, num_inputs)
+            else "Starting tuning"
+        )
+        for fold_index, (fold_train_samples, _) in enumerate(cv_folds, start=1):
+            print_training_image_paths(
+                fold_train_samples,
+                f"Tuning fold {fold_index} training image order",
+            )
+        print_section(tuning_title)
+        print_key_values(
+            [
+                ("tuning_dir", tuning_dir),
+                ("run_name", run_name),
+                ("max_trials", max_trials),
+                ("tune_epochs", tune_epochs),
+                ("per_replica_batch_size", best_batch_size),
+                ("global_batch_size", global_batch_size),
+            ]
+        )
 
         tuner.search(
             cv_folds=cv_folds,
@@ -356,10 +466,15 @@ def train_model(
         print(f"Best hyperparameters: {best_hp.values}")
 
         learning_rate = best_hp.get("learning_rate")
+        selected_hyperparameters = list(best_hp.values.items())
 
         all_train_samples = []
         for _, val_samples_fold in cv_folds:
             all_train_samples.extend(val_samples_fold)
+        print_training_image_paths(
+            all_train_samples,
+            "Training image order for final training",
+        )
 
         tmpdir = os.environ.get("TMPDIR", "/tmp")
         job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -387,8 +502,6 @@ def train_model(
         monitor_metric = "loss"
         fit_kwargs = {}
 
-    import datetime
-
     log_dir = os.path.join(
         "logs", "fit", f"{run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     )
@@ -413,7 +526,22 @@ def train_model(
 
     initial_epoch = 0
     if resume_path:
+        print_section("Resuming training")
+        print_key_values([("resume_path", resume_path)])
         initial_epoch = infer_initial_epoch(final_model, full_dataset)
+
+    final_training_details = list(selected_hyperparameters)
+    final_training_details.extend(
+        [
+            ("per_replica_batch_size", best_batch_size),
+            ("global_batch_size", global_batch_size),
+            ("final_epochs", final_epochs),
+            ("monitor_metric", monitor_metric),
+            ("output_model_path", output_model_path),
+        ]
+    )
+    print_section("Starting final training")
+    print_key_values(final_training_details)
 
     final_model.fit(
         full_dataset,

@@ -1,7 +1,9 @@
 import importlib
+import io
 import sys
 import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +41,7 @@ class _FakeStrategy:
 
 
 def _install_training_import_stubs() -> None:
+    np_module = types.ModuleType("numpy")
     tf_module = types.ModuleType("tensorflow")
     tf_module.errors = SimpleNamespace(ResourceExhaustedError=RuntimeError)
     tf_module.distribute = SimpleNamespace(MirroredStrategy=lambda: _FakeStrategy())
@@ -83,6 +86,7 @@ def _install_training_import_stubs() -> None:
     model_module.initialize_from_checkpoint = lambda *args, **kwargs: "checkpoint-model"
     model_module.weighted_crossentropy = object()
 
+    sys.modules["numpy"] = np_module
     sys.modules["tensorflow"] = tf_module
     sys.modules["keras_tuner"] = kt_module
     sys.modules["keras"] = keras_module
@@ -97,6 +101,39 @@ def _reload_module(name: str):
 
 
 class TrainHelperTests(unittest.TestCase):
+    def test_print_training_image_paths_groups_region_samples_by_source_image(
+        self,
+    ) -> None:
+        _install_training_import_stubs()
+        train = _reload_module("train")
+        samples = [
+            {
+                "id": "tile_a",
+                "images": ["a_PPL.tif", "a_PPX1.tif"],
+                "region": (0, 10, 0, 10),
+            },
+            {
+                "id": "tile_a",
+                "images": ["a_PPL.tif", "a_PPX1.tif"],
+                "region": (10, 20, 0, 10),
+            },
+            {
+                "id": "tile_b",
+                "images": ["b_PPL.tif", "b_PPX1.tif"],
+                "region": (0, 10, 0, 10),
+            },
+        ]
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            train.print_training_image_paths(samples, "Training image order")
+
+        output = buffer.getvalue()
+        self.assertEqual(output.count("a_PPL.tif"), 1)
+        self.assertEqual(output.count("a_PPX1.tif"), 1)
+        self.assertIn("region_count : 2", output)
+        self.assertIn("unique_source_samples : 2", output)
+
     def test_build_model_for_tuning_ignores_resume_final_checkpoint(self) -> None:
         _install_training_import_stubs()
         train = _reload_module("train")

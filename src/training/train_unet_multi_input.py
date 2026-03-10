@@ -4,6 +4,28 @@ import sys
 from train import train_model
 
 
+def _print_start_message(
+    args: argparse.Namespace, *, stride: int, split_tile_size: int
+) -> None:
+    fields = list(vars(args).items())
+    fields.extend(
+        [
+            ("stride", stride),
+            ("effective_split_tile_size", split_tile_size),
+            ("mixed_precision_enabled", not args.no_mixed_precision),
+        ]
+    )
+    key_width = max(len(key) for key, _ in fields)
+    border = "=" * 80
+
+    print(border)
+    print("Training Pipeline Start")
+    print(border)
+    for key, value in fields:
+        print(f"{key:<{key_width}} : {value}")
+    print(border)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fine-tune multi-input U-Net from raster masks."
@@ -124,6 +146,7 @@ def main(argv: list[str] | None = None) -> None:
 
     split_tile_size = args.split_tile_size or args.patch_size
     stride = int(args.patch_size * (1 - args.patch_overlap))
+    _print_start_message(args, stride=stride, split_tile_size=split_tile_size)
 
     train_model(
         image_dir=args.image_dir,
