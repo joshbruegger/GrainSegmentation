@@ -11,7 +11,7 @@ SUPPRESSED_PATTERNS = (
     re.compile(
         r"gpu_timer\.cc:\d+\] Skipping the delay kernel, measurement accuracy will be reduced"
     ),
-    re.compile(r"ptx85.*is not a recognized feature for this target"),
+    re.compile(r".*is not a recognized feature for this target \(ignoring feature\)"),
 )
 
 

@@ -81,7 +81,7 @@ submitted=false
 if [ "$run_ppl" = true ]; then
     echo "Submitting PPL only (1 input) job..."
     sbatch \
-        --time=07:00:00 \
+        --mem=256G \
         --job-name=Train_PPL \
         SLURM/train_unet_multi_input.sh \
         --num-inputs 1 \
@@ -96,7 +96,7 @@ fi
 if [ "$run_ppl_ppx_composite" = true ]; then
     echo "Submitting PPLPPXBlend (1 input) job..."
     sbatch \
-        --time=07:00:00 \
+        --mem=256G \
         --job-name=Train_PPLPPXBlend \
         SLURM/train_unet_multi_input.sh \
         --num-inputs 1 \
@@ -111,7 +111,7 @@ fi
 if [ "$run_ppl_plus_ppx_composite" = true ]; then
     echo "Submitting PPL + PPXblend (2 inputs) job..."
     sbatch \
-        --time=11:00:00 \
+        --mem=512G \
         --job-name=Train_PPL+PPXblend \
         SLURM/train_unet_multi_input.sh \
         --num-inputs 2 \
@@ -126,7 +126,6 @@ fi
 if [ "$run_all_ppx" = true ]; then
     echo "Submitting PPL + All PPX (7 inputs) job..."
     sbatch \
-        --time=12:00:00 \
         --mem=950G \
         --job-name=Train_PPL+AllPPX \
         SLURM/train_unet_multi_input.sh \
