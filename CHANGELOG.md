@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-03-10)
+
+### Features
+
+- Add frozen CV epoch selection
+  ([`f030cf9`](https://github.com/joshbruegger/GrainSegmentation/commit/f030cf9c7fddd96b887d8554e965bd306ce6a275))
+
+
 ## v0.8.0 (2026-03-10)
 
 ### Bug Fixes
