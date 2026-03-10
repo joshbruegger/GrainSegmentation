@@ -6,3 +6,4 @@ notes.md
 logs/
 *.gpkg
 __pycache__/
+.worktrees/

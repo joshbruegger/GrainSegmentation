@@ -300,7 +300,9 @@ def summarize_cv_epoch_selection(
         summarized_folds.append({**fold_summary, "best_updates": best_updates})
 
     aggregated_updates = math.ceil(statistics.median(fold_best_updates))
-    unbounded_final_epochs = max(1, math.ceil(aggregated_updates / full_steps_per_epoch))
+    unbounded_final_epochs = max(
+        1, math.ceil(aggregated_updates / full_steps_per_epoch)
+    )
     selected_final_epochs = unbounded_final_epochs
     if epoch_cap is not None:
         selected_final_epochs = min(selected_final_epochs, epoch_cap)
@@ -667,6 +669,7 @@ def train_model(
                 "without a checkpoint baseline.",
             )
         else:
+            print_section("Starting frozen CV epoch selection")
             try:
                 epoch_selection_summary = estimate_final_epochs_from_cv(
                     cv_folds=cv_folds,

@@ -67,7 +67,9 @@ def _install_training_import_stubs() -> None:
     np_module = types.ModuleType("numpy")
     tf_module = types.ModuleType("tensorflow")
     tf_module.errors = SimpleNamespace(ResourceExhaustedError=RuntimeError)
-    tf_module.config = SimpleNamespace(list_logical_devices=lambda *_args, **_kwargs: [])
+    tf_module.config = SimpleNamespace(
+        list_logical_devices=lambda *_args, **_kwargs: []
+    )
     tf_module.distribute = SimpleNamespace(MirroredStrategy=lambda: _FakeStrategy())
     tf_module.keras = SimpleNamespace(
         mixed_precision=SimpleNamespace(set_global_policy=lambda policy: None),
@@ -376,11 +378,24 @@ class TrainHelperTests(unittest.TestCase):
             get_best_hyperparameters=Mock(return_value=[best_hp]),
         )
         final_model = SimpleNamespace(fit=Mock(), save=Mock(), optimizer=None)
+        buffer = io.StringIO()
 
         with (
-            patch.object(train.tf.keras.callbacks, "TensorBoard", side_effect=lambda **kwargs: ("tensorboard", kwargs)),
-            patch.object(train.tf.keras.callbacks, "ReduceLROnPlateau", side_effect=lambda **kwargs: ("reduce-lr", kwargs)),
-            patch.object(train.tf.keras.callbacks, "ModelCheckpoint", side_effect=lambda **kwargs: ("checkpoint", kwargs)),
+            patch.object(
+                train.tf.keras.callbacks,
+                "TensorBoard",
+                side_effect=lambda **kwargs: ("tensorboard", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ReduceLROnPlateau",
+                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ModelCheckpoint",
+                side_effect=lambda **kwargs: ("checkpoint", kwargs),
+            ),
             patch.object(train.tf.config, "list_logical_devices", return_value=[]),
             patch.object(train, "print_training_image_paths"),
             patch.object(train, "list_samples", return_value=["sample-a", "sample-b"]),
@@ -391,7 +406,9 @@ class TrainHelperTests(unittest.TestCase):
             ),
             patch.object(train, "find_optimal_batch_size", return_value=2),
             patch.object(train, "create_tuner", return_value=tuner),
-            patch.object(train, "build_dataset", return_value=[object(), object(), object()]),
+            patch.object(
+                train, "build_dataset", return_value=[object(), object(), object()]
+            ),
             patch.object(train, "build_final_model", return_value=final_model),
             patch.object(train, "compile_model_for_training", return_value=final_model),
             patch.object(
@@ -406,38 +423,42 @@ class TrainHelperTests(unittest.TestCase):
                 },
             ) as estimate_final_epochs_from_cv,
         ):
-            train.train_model(
-                image_dir="images",
-                mask_dir="masks",
-                checkpoint_path="start.keras",
-                resume_path="resume.keras",
-                output_model_path="model.keras",
-                patch_size=256,
-                stride=128,
-                tune_epochs=20,
-                final_epochs=100,
-                image_suffixes=["_PPL"],
-                mask_ext=".tif",
-                mask_stem_suffix="_labels",
-                split_tile_size=256,
-                split_coverage_bins=8,
-                num_inputs=1,
-                run_name="epoch-selection",
-                tuning_dir="/tmp/tuning",
-                n_splits=2,
-                random_state=42,
-                use_mixed_precision=False,
-                max_trials=3,
-                skip_tuning=False,
-            )
+            with redirect_stdout(buffer):
+                train.train_model(
+                    image_dir="images",
+                    mask_dir="masks",
+                    checkpoint_path="start.keras",
+                    resume_path="resume.keras",
+                    output_model_path="model.keras",
+                    patch_size=256,
+                    stride=128,
+                    tune_epochs=20,
+                    final_epochs=100,
+                    image_suffixes=["_PPL"],
+                    mask_ext=".tif",
+                    mask_stem_suffix="_labels",
+                    split_tile_size=256,
+                    split_coverage_bins=8,
+                    num_inputs=1,
+                    run_name="epoch-selection",
+                    tuning_dir="/tmp/tuning",
+                    n_splits=2,
+                    random_state=42,
+                    use_mixed_precision=False,
+                    max_trials=3,
+                    skip_tuning=False,
+                )
 
         self.assertEqual(
             estimate_final_epochs_from_cv.call_args.kwargs["max_epochs"], 100
         )
+        self.assertIn("Starting frozen CV epoch selection", buffer.getvalue())
         final_model.fit.assert_called_once()
         self.assertEqual(final_model.fit.call_args.kwargs["epochs"], 7)
 
-    def test_train_model_skips_epoch_selection_when_resuming_without_checkpoint(self) -> None:
+    def test_train_model_skips_epoch_selection_when_resuming_without_checkpoint(
+        self,
+    ) -> None:
         _install_training_import_stubs()
         train = _reload_module("train")
         best_hp = _FakeHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
@@ -448,9 +469,21 @@ class TrainHelperTests(unittest.TestCase):
         final_model = SimpleNamespace(fit=Mock(), save=Mock(), optimizer=None)
 
         with (
-            patch.object(train.tf.keras.callbacks, "TensorBoard", side_effect=lambda **kwargs: ("tensorboard", kwargs)),
-            patch.object(train.tf.keras.callbacks, "ReduceLROnPlateau", side_effect=lambda **kwargs: ("reduce-lr", kwargs)),
-            patch.object(train.tf.keras.callbacks, "ModelCheckpoint", side_effect=lambda **kwargs: ("checkpoint", kwargs)),
+            patch.object(
+                train.tf.keras.callbacks,
+                "TensorBoard",
+                side_effect=lambda **kwargs: ("tensorboard", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ReduceLROnPlateau",
+                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ModelCheckpoint",
+                side_effect=lambda **kwargs: ("checkpoint", kwargs),
+            ),
             patch.object(train.tf.config, "list_logical_devices", return_value=[]),
             patch.object(train, "print_training_image_paths"),
             patch.object(train, "list_samples", return_value=["sample-a", "sample-b"]),
@@ -461,11 +494,15 @@ class TrainHelperTests(unittest.TestCase):
             ),
             patch.object(train, "find_optimal_batch_size", return_value=2),
             patch.object(train, "create_tuner", return_value=tuner),
-            patch.object(train, "build_dataset", return_value=[object(), object(), object()]),
+            patch.object(
+                train, "build_dataset", return_value=[object(), object(), object()]
+            ),
             patch.object(train, "build_final_model", return_value=final_model),
             patch.object(train, "compile_model_for_training", return_value=final_model),
             patch.object(train, "infer_initial_epoch", return_value=3),
-            patch.object(train, "estimate_final_epochs_from_cv") as estimate_final_epochs_from_cv,
+            patch.object(
+                train, "estimate_final_epochs_from_cv"
+            ) as estimate_final_epochs_from_cv,
         ):
             train.train_model(
                 image_dir="images",
@@ -496,7 +533,9 @@ class TrainHelperTests(unittest.TestCase):
         final_model.fit.assert_called_once()
         self.assertEqual(final_model.fit.call_args.kwargs["epochs"], 100)
 
-    def test_train_model_skips_fit_when_resume_already_meets_selected_epochs(self) -> None:
+    def test_train_model_skips_fit_when_resume_already_meets_selected_epochs(
+        self,
+    ) -> None:
         _install_training_import_stubs()
         train = _reload_module("train")
         best_hp = _FakeHyperparameters({"dropout": 0.0, "learning_rate": 1e-3})
@@ -507,9 +546,21 @@ class TrainHelperTests(unittest.TestCase):
         final_model = SimpleNamespace(fit=Mock(), save=Mock(), optimizer=None)
 
         with (
-            patch.object(train.tf.keras.callbacks, "TensorBoard", side_effect=lambda **kwargs: ("tensorboard", kwargs)),
-            patch.object(train.tf.keras.callbacks, "ReduceLROnPlateau", side_effect=lambda **kwargs: ("reduce-lr", kwargs)),
-            patch.object(train.tf.keras.callbacks, "ModelCheckpoint", side_effect=lambda **kwargs: ("checkpoint", kwargs)),
+            patch.object(
+                train.tf.keras.callbacks,
+                "TensorBoard",
+                side_effect=lambda **kwargs: ("tensorboard", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ReduceLROnPlateau",
+                side_effect=lambda **kwargs: ("reduce-lr", kwargs),
+            ),
+            patch.object(
+                train.tf.keras.callbacks,
+                "ModelCheckpoint",
+                side_effect=lambda **kwargs: ("checkpoint", kwargs),
+            ),
             patch.object(train.tf.config, "list_logical_devices", return_value=[]),
             patch.object(train, "print_training_image_paths"),
             patch.object(train, "list_samples", return_value=["sample-a", "sample-b"]),
@@ -520,7 +571,9 @@ class TrainHelperTests(unittest.TestCase):
             ),
             patch.object(train, "find_optimal_batch_size", return_value=2),
             patch.object(train, "create_tuner", return_value=tuner),
-            patch.object(train, "build_dataset", return_value=[object(), object(), object()]),
+            patch.object(
+                train, "build_dataset", return_value=[object(), object(), object()]
+            ),
             patch.object(train, "build_final_model", return_value=final_model),
             patch.object(train, "compile_model_for_training", return_value=final_model),
             patch.object(train, "infer_initial_epoch", return_value=7),
