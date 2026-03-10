@@ -1,7 +1,9 @@
 import importlib
+import io
 import sys
 import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -26,6 +28,17 @@ def _reload_module(name: str):
 
 
 class TrainCliTests(unittest.TestCase):
+    def test_parse_args_help_describes_epochs_as_tuned_run_cap(self) -> None:
+        _install_train_stub([])
+        module = _reload_module("train_unet_multi_input")
+
+        buffer = io.StringIO()
+        with self.assertRaises(SystemExit) as exc_info, redirect_stdout(buffer):
+            module.parse_args(["--help"])
+
+        self.assertEqual(exc_info.exception.code, 0)
+        self.assertIn("frozen-CV pass", buffer.getvalue())
+
     def test_parse_args_accepts_resume_flag(self) -> None:
         _install_train_stub([])
         module = _reload_module("train_unet_multi_input")

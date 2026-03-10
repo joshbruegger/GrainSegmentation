@@ -35,6 +35,7 @@ function usage {
     echo "  --resume [path]: Resume final training from a saved checkpoint (defaults to *_latest.keras)"
     echo "  --skip-tuning: Skip tuning"
     echo "  --verbose: Disable stderr filtering and keep raw TensorFlow/XLA diagnostics"
+    echo "  Tuned runs choose final epochs with a frozen-CV pass, capped by the training script's --epochs setting."
     echo "  Re-running with the same run name and tuning dir automatically resumes tuner state."
     exit 1
 }

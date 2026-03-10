@@ -56,7 +56,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.5,
         help="Percentage to overlap patches (0 to 1)",
     )
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help=(
+            "Maximum epochs for final training. Tuned runs use a frozen-CV pass "
+            "to choose a final epoch count up to this cap."
+        ),
+    )
     parser.add_argument(
         "--tune-epochs", type=int, default=20, help="Max epochs per tuning trial"
     )

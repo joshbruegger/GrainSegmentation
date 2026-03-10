@@ -109,6 +109,7 @@ class SlurmScriptTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("--verbose", result.stdout)
+        self.assertIn("frozen-CV pass", result.stdout)
 
 
 if __name__ == "__main__":

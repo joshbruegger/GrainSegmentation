@@ -1,5 +1,7 @@
 import datetime
+import math
 import os
+import statistics
 import numpy as np
 import tensorflow as tf
 import keras_tuner as kt
@@ -262,6 +264,175 @@ def infer_initial_epoch(model, dataset) -> int:
     return initial_epoch
 
 
+def select_best_epoch_from_history(history, monitor: str = "val_loss"):
+    metric_values = list(getattr(history, "history", {}).get(monitor, []))
+    if not metric_values:
+        raise ValueError(f"History does not contain any values for {monitor}.")
+
+    best_index = min(range(len(metric_values)), key=metric_values.__getitem__)
+    return best_index + 1, metric_values[best_index]
+
+
+def summarize_cv_epoch_selection(
+    fold_summaries,
+    full_steps_per_epoch: int,
+    epoch_cap: int | None,
+):
+    if not fold_summaries:
+        raise ValueError("fold_summaries must not be empty.")
+    if full_steps_per_epoch <= 0:
+        raise ValueError("full_steps_per_epoch must be > 0.")
+    if epoch_cap is not None and epoch_cap <= 0:
+        raise ValueError("epoch_cap must be > 0 when provided.")
+
+    summarized_folds = []
+    fold_best_updates = []
+    for fold_summary in fold_summaries:
+        best_epoch = int(fold_summary["best_epoch"])
+        train_steps_per_epoch = int(fold_summary["train_steps_per_epoch"])
+        if best_epoch <= 0:
+            raise ValueError("best_epoch must be > 0 for every fold.")
+        if train_steps_per_epoch <= 0:
+            raise ValueError("train_steps_per_epoch must be > 0 for every fold.")
+
+        best_updates = best_epoch * train_steps_per_epoch
+        fold_best_updates.append(best_updates)
+        summarized_folds.append({**fold_summary, "best_updates": best_updates})
+
+    aggregated_updates = math.ceil(statistics.median(fold_best_updates))
+    unbounded_final_epochs = max(1, math.ceil(aggregated_updates / full_steps_per_epoch))
+    selected_final_epochs = unbounded_final_epochs
+    if epoch_cap is not None:
+        selected_final_epochs = min(selected_final_epochs, epoch_cap)
+
+    return {
+        "fold_summaries": summarized_folds,
+        "aggregated_updates": aggregated_updates,
+        "unbounded_final_epochs": unbounded_final_epochs,
+        "selected_final_epochs": max(1, int(selected_final_epochs)),
+        "epoch_cap": epoch_cap,
+        "used_fallback": False,
+    }
+
+
+def build_epoch_selection_fallback(
+    epoch_cap: int,
+    reason: str,
+    *,
+    fold_summaries=None,
+):
+    return {
+        "fold_summaries": list(fold_summaries or []),
+        "aggregated_updates": None,
+        "unbounded_final_epochs": None,
+        "selected_final_epochs": max(1, int(epoch_cap)),
+        "epoch_cap": epoch_cap,
+        "used_fallback": True,
+        "fallback_reason": reason,
+    }
+
+
+def estimate_final_epochs_from_cv(
+    *,
+    cv_folds,
+    checkpoint_path: str | None,
+    patch_size: int,
+    stride: int,
+    num_inputs: int,
+    best_batch_size: int,
+    best_hp,
+    max_epochs: int,
+    full_steps_per_epoch: int,
+):
+    if full_steps_per_epoch <= 0:
+        raise ValueError("full_steps_per_epoch must be > 0.")
+
+    fold_summaries = []
+    learning_rate = best_hp.get("learning_rate")
+    tmpdir = os.environ.get("TMPDIR", "/tmp")
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+
+    for fold_index, (train_samples, val_samples) in enumerate(cv_folds, start=1):
+        strategy = tf.distribute.MirroredStrategy()
+        global_batch_size = best_batch_size * strategy.num_replicas_in_sync
+        train_cache = os.path.join(
+            tmpdir, f"tf_cache_epoch_select_train_fold{fold_index}_{job_id}"
+        )
+        val_cache = os.path.join(
+            tmpdir, f"tf_cache_epoch_select_val_fold{fold_index}_{job_id}"
+        )
+
+        train_dataset = build_dataset(
+            train_samples,
+            patch_size=patch_size,
+            stride=stride,
+            batch_size=global_batch_size,
+            augment=True,
+            num_inputs=num_inputs,
+            cache_file=train_cache,
+        )
+        val_dataset = build_dataset(
+            val_samples,
+            patch_size=patch_size,
+            stride=patch_size,
+            batch_size=global_batch_size,
+            augment=False,
+            num_inputs=num_inputs,
+            cache_file=val_cache,
+        )
+        train_steps_per_epoch = sum(1 for _ in train_dataset)
+
+        with strategy.scope():
+            model = build_model_for_tuning(
+                checkpoint_path=checkpoint_path,
+                resume_path=None,
+                patch_size=patch_size,
+                num_inputs=num_inputs,
+                hp=best_hp,
+            )
+            model = compile_model_for_training(model, learning_rate=learning_rate)
+
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=4,
+            restore_best_weights=True,
+        )
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1
+        )
+
+        try:
+            history = model.fit(
+                train_dataset,
+                validation_data=val_dataset,
+                epochs=max_epochs,
+                callbacks=[early_stopping, reduce_lr],
+                verbose=2,
+            )
+        except tf.errors.ResourceExhaustedError:
+            return build_epoch_selection_fallback(
+                max_epochs,
+                f"OOM during frozen CV epoch selection on fold {fold_index}.",
+                fold_summaries=fold_summaries,
+            )
+
+        best_epoch, best_val_loss = select_best_epoch_from_history(history)
+        fold_summaries.append(
+            {
+                "fold_index": fold_index,
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val_loss,
+                "train_steps_per_epoch": train_steps_per_epoch,
+            }
+        )
+
+    return summarize_cv_epoch_selection(
+        fold_summaries=fold_summaries,
+        full_steps_per_epoch=full_steps_per_epoch,
+        epoch_cap=max_epochs,
+    )
+
+
 def create_tuner(
     hypermodel,
     max_trials: int,
@@ -386,6 +557,7 @@ def train_model(
     print(f"Optimal per-replica batch size found: {best_batch_size}")
     global_batch_size = best_batch_size * num_replicas_in_sync
     selected_hyperparameters = []
+    epoch_selection_summary = None
 
     if skip_tuning:
         print("Skipping hyperparameter tuning. Using default settings.")
@@ -487,6 +659,32 @@ def train_model(
             num_inputs=num_inputs,
             cache_file=os.path.join(tmpdir, f"tf_cache_train_all_folds_{job_id}"),
         )
+        full_steps_per_epoch = sum(1 for _ in full_dataset)
+        if resume_path and not checkpoint_path:
+            epoch_selection_summary = build_epoch_selection_fallback(
+                final_epochs,
+                "Frozen CV epoch selection skipped for resumed tuned training "
+                "without a checkpoint baseline.",
+            )
+        else:
+            try:
+                epoch_selection_summary = estimate_final_epochs_from_cv(
+                    cv_folds=cv_folds,
+                    checkpoint_path=checkpoint_path,
+                    patch_size=patch_size,
+                    stride=stride,
+                    num_inputs=num_inputs,
+                    best_batch_size=best_batch_size,
+                    best_hp=best_hp,
+                    max_epochs=final_epochs,
+                    full_steps_per_epoch=full_steps_per_epoch,
+                )
+            except ValueError as exc:
+                epoch_selection_summary = build_epoch_selection_fallback(
+                    final_epochs,
+                    f"Frozen CV epoch selection skipped: {exc}",
+                )
+        final_epochs = epoch_selection_summary["selected_final_epochs"]
 
         strategy = tf.distribute.MirroredStrategy()
         with strategy.scope():
@@ -525,10 +723,48 @@ def train_model(
     )
 
     initial_epoch = 0
+    should_run_final_training = True
     if resume_path:
         print_section("Resuming training")
         print_key_values([("resume_path", resume_path)])
         initial_epoch = infer_initial_epoch(final_model, full_dataset)
+        if initial_epoch >= final_epochs:
+            print(
+                "Resume checkpoint already meets or exceeds the selected final "
+                "epoch budget. Skipping additional training."
+            )
+            should_run_final_training = False
+
+    if epoch_selection_summary is not None:
+        print_section("Frozen CV epoch selection")
+        epoch_selection_details = [
+            ("epoch_cap", epoch_selection_summary.get("epoch_cap")),
+            ("aggregated_updates", epoch_selection_summary.get("aggregated_updates")),
+            (
+                "unbounded_final_epochs",
+                epoch_selection_summary.get("unbounded_final_epochs"),
+            ),
+            (
+                "selected_final_epochs",
+                epoch_selection_summary["selected_final_epochs"],
+            ),
+            ("used_fallback", epoch_selection_summary["used_fallback"]),
+        ]
+        if epoch_selection_summary["used_fallback"]:
+            epoch_selection_details.append(
+                ("fallback_reason", epoch_selection_summary["fallback_reason"])
+            )
+        print_key_values(epoch_selection_details)
+        for fold_summary in epoch_selection_summary["fold_summaries"]:
+            print_key_values(
+                [
+                    ("fold_index", fold_summary["fold_index"]),
+                    ("best_epoch", fold_summary["best_epoch"]),
+                    ("best_val_loss", fold_summary.get("best_val_loss")),
+                    ("train_steps_per_epoch", fold_summary["train_steps_per_epoch"]),
+                    ("best_updates", fold_summary.get("best_updates")),
+                ]
+            )
 
     final_training_details = list(selected_hyperparameters)
     final_training_details.extend(
@@ -543,14 +779,20 @@ def train_model(
     print_section("Starting final training")
     print_key_values(final_training_details)
 
-    final_model.fit(
-        full_dataset,
-        epochs=final_epochs,
-        initial_epoch=initial_epoch,
-        callbacks=[reduce_lr, checkpoint_best, checkpoint_latest, tensorboard_callback],
-        verbose=2,
-        **fit_kwargs,
-    )
+    if should_run_final_training:
+        final_model.fit(
+            full_dataset,
+            epochs=final_epochs,
+            initial_epoch=initial_epoch,
+            callbacks=[
+                reduce_lr,
+                checkpoint_best,
+                checkpoint_latest,
+                tensorboard_callback,
+            ],
+            verbose=2,
+            **fit_kwargs,
+        )
 
     final_model.save(output_model_path)
     return final_model
