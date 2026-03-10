@@ -206,6 +206,35 @@ class PlotResultsCliTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 plot_results.main()
 
+    def test_main_accepts_complete_overlay_only_inputs(self) -> None:
+        plot_results = _reload_module("evaluation.plot_results")
+
+        argv = [
+            "plot_results.py",
+            "--image-path",
+            "image.png",
+            "--gt-path",
+            "gt.png",
+            "--pred-paths",
+            "pred.png",
+            "--labels",
+            "baseline",
+            "--output-overlay",
+            "overlay.png",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            with patch.object(plot_results, "generate_qualitative_overlay") as overlay:
+                plot_results.main()
+
+        overlay.assert_called_once_with(
+            "image.png",
+            "gt.png",
+            ["pred.png"],
+            ["baseline"],
+            "overlay.png",
+        )
+
     def test_generate_quantitative_plot_omits_error_bars_for_single_sample(
         self,
     ) -> None:

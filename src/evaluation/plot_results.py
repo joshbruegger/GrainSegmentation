@@ -38,7 +38,7 @@ def parse_args():
 
 def _validate_args(args, parser: argparse.ArgumentParser) -> None:
     quantitative_selected = any(
-        value is not None for value in (args.json_files, args.labels, args.output_plot)
+        value is not None for value in (args.json_files, args.output_plot)
     )
     overlay_selected = any(
         value is not None
