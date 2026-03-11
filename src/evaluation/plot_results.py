@@ -6,6 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
+Image.MAX_IMAGE_PIXELS = None
+OVERLAY_MAX_DIM = 2048
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -162,10 +165,9 @@ def generate_quantitative_plot(json_files, labels, output_path):
 
 def blend_overlay(image, mask):
     # image: RGB [0, 1], mask: integer 0, 1, 2
-    # Create an RGB color mask: background=0,0,0, interior=blue, boundary=red
+    # Use a single red tint for all foreground classes so overlays remain visible.
     color_mask = np.zeros_like(image)
-    color_mask[mask == 1] = [0.0, 0.0, 1.0]  # Interior
-    color_mask[mask == 2] = [1.0, 0.0, 0.0]  # Boundary
+    color_mask[mask > 0] = [1.0, 0.0, 0.0]
 
     # Where mask > 0, blend image and color
     alpha = 0.4
@@ -173,6 +175,66 @@ def blend_overlay(image, mask):
     active = mask > 0
     overlay[active] = image[active] * (1 - alpha) + color_mask[active] * alpha
     return overlay
+
+
+def _resize_overlay_arrays(rgb_img, gt_mask, preds, max_dim=OVERLAY_MAX_DIM):
+    height, width = rgb_img.shape[:2]
+    longest = max(height, width)
+    if longest <= max_dim:
+        return rgb_img, gt_mask, preds
+
+    scale = max_dim / float(longest)
+    resized_width = max(1, int(round(width * scale)))
+    resized_height = max(1, int(round(height * scale)))
+    resized_size = (resized_width, resized_height)
+
+    resized_image = (
+        np.asarray(
+            Image.fromarray((rgb_img * 255.0).astype(np.uint8), mode="RGB").resize(
+                resized_size, resample=Image.Resampling.BILINEAR
+            ),
+            dtype=np.float32,
+        )
+        / 255.0
+    )
+    resized_gt = np.asarray(
+        Image.fromarray(gt_mask).resize(resized_size, resample=Image.Resampling.NEAREST)
+    )
+    resized_preds = [
+        np.asarray(
+            Image.fromarray(pred).resize(
+                resized_size, resample=Image.Resampling.NEAREST
+            )
+        )
+        for pred in preds
+    ]
+    return resized_image, resized_gt, resized_preds
+
+
+def _sanitize_overlay_label(label: str) -> str:
+    safe_chars = []
+    for char in label:
+        if char.isalnum() or char in {"+", "-", "_"}:
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+
+    sanitized = "".join(safe_chars).strip("_")
+    return sanitized or "model"
+
+
+def _build_overlay_output_paths(
+    output_path: str, labels: list[str]
+) -> tuple[str, list[str]]:
+    output_dir = os.path.dirname(output_path) or "."
+    base_name = os.path.splitext(os.path.basename(output_path))[0] or "overlay"
+
+    gt_output = os.path.join(output_dir, f"{base_name}_ground_truth.png")
+    pred_outputs = [
+        os.path.join(output_dir, f"{base_name}_{_sanitize_overlay_label(label)}.png")
+        for label in labels
+    ]
+    return gt_output, pred_outputs
 
 
 def generate_qualitative_overlay(image_path, gt_path, pred_paths, labels, output_path):
@@ -191,26 +253,22 @@ def generate_qualitative_overlay(image_path, gt_path, pred_paths, labels, output
                 img = img.convert("L")
             preds.append(np.asarray(img))
 
-    num_cols = 2 + len(preds)
+    rgb_img, gt_mask, preds = _resize_overlay_arrays(rgb_img, gt_mask, preds)
+    gt_output_path, pred_output_paths = _build_overlay_output_paths(output_path, labels)
 
-    fig, axes = plt.subplots(1, num_cols, figsize=(5 * num_cols, 5))
+    if os.path.exists(output_path):
+        os.remove(output_path)
 
-    axes[0].imshow(rgb_img)
-    axes[0].set_title("Original PPL")
-    axes[0].axis("off")
+    Image.fromarray((blend_overlay(rgb_img, gt_mask) * 255.0).astype(np.uint8)).save(
+        gt_output_path
+    )
+    print(f"Saved qualitative overlay to {gt_output_path}")
 
-    axes[1].imshow(blend_overlay(rgb_img, gt_mask))
-    axes[1].set_title("Ground Truth")
-    axes[1].axis("off")
-
-    for i, (pred, label) in enumerate(zip(preds, labels)):
-        axes[2 + i].imshow(blend_overlay(rgb_img, pred))
-        axes[2 + i].set_title(f"Pred: {label}")
-        axes[2 + i].axis("off")
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"Saved qualitative overlay to {output_path}")
+    for label, pred, pred_output_path in zip(labels, preds, pred_output_paths):
+        Image.fromarray((blend_overlay(rgb_img, pred) * 255.0).astype(np.uint8)).save(
+            pred_output_path
+        )
+        print(f"Saved qualitative overlay to {pred_output_path} ({label})")
 
 
 def main():

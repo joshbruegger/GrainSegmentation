@@ -277,6 +277,104 @@ class PlotResultsCliTests(unittest.TestCase):
             self.assertNotIn("yerr", ax.bar.call_args.kwargs)
             self.assertIn("descriptive", ax.set_title.call_args.args[0].lower())
 
+    def test_generate_qualitative_overlay_disables_pillow_pixel_guard(self) -> None:
+        plot_results = _reload_module("evaluation.plot_results")
+
+        def guarded_open(path):
+            if plot_results.Image.MAX_IMAGE_PIXELS is not None:
+                raise plot_results.Image.DecompressionBombError("pixel guard enabled")
+
+            if path == "image.png":
+                image = Image.fromarray(np.zeros((2, 2, 3), dtype=np.uint8), mode="RGB")
+            else:
+                image = Image.fromarray(np.zeros((2, 2), dtype=np.uint8), mode="L")
+
+            return contextlib.closing(image)
+
+        axes = [
+            SimpleNamespace(imshow=Mock(), set_title=Mock(), axis=Mock())
+            for _ in range(3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "overlay.png"
+
+            with patch.object(plot_results.Image, "open", side_effect=guarded_open):
+                plot_results.generate_qualitative_overlay(
+                    "image.png",
+                    "gt.png",
+                    ["pred.png"],
+                    ["Baseline"],
+                    str(output_path),
+                )
+
+            self.assertTrue((Path(tmpdir) / "overlay_ground_truth.png").exists())
+            self.assertTrue((Path(tmpdir) / "overlay_Baseline.png").exists())
+
+    def test_blend_overlay_uses_red_tint_for_all_foreground_classes(self) -> None:
+        plot_results = _reload_module("evaluation.plot_results")
+
+        image = np.zeros((1, 3, 3), dtype=np.float32)
+        mask = np.array([[0, 1, 2]], dtype=np.uint8)
+
+        overlay = plot_results.blend_overlay(image, mask)
+
+        np.testing.assert_allclose(overlay[0, 0], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(overlay[0, 1], [0.4, 0.0, 0.0])
+        np.testing.assert_allclose(overlay[0, 2], [0.4, 0.0, 0.0])
+
+    def test_generate_qualitative_overlay_writes_ground_truth_and_one_file_per_model(
+        self,
+    ) -> None:
+        plot_results = _reload_module("evaluation.plot_results")
+
+        rgb = np.full((2, 2, 3), 128, dtype=np.uint8)
+        gt = np.array([[0, 1], [2, 0]], dtype=np.uint8)
+        pred_a = np.array([[1, 0], [0, 0]], dtype=np.uint8)
+        pred_b = np.array([[0, 0], [2, 1]], dtype=np.uint8)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "image.png"
+            gt_path = Path(tmpdir) / "gt.png"
+            pred_a_path = Path(tmpdir) / "pred_a.png"
+            pred_b_path = Path(tmpdir) / "pred_b.png"
+            output_path = Path(tmpdir) / "overlay.png"
+
+            Image.fromarray(rgb, mode="RGB").save(image_path)
+            Image.fromarray(gt, mode="L").save(gt_path)
+            Image.fromarray(pred_a, mode="L").save(pred_a_path)
+            Image.fromarray(pred_b, mode="L").save(pred_b_path)
+            output_path.write_text("stale montage", encoding="utf-8")
+
+            plot_results.generate_qualitative_overlay(
+                str(image_path),
+                str(gt_path),
+                [str(pred_a_path), str(pred_b_path)],
+                ["ModelA", "ModelB"],
+                str(output_path),
+            )
+
+            self.assertFalse(output_path.exists())
+            self.assertTrue((Path(tmpdir) / "overlay_ground_truth.png").exists())
+            self.assertTrue((Path(tmpdir) / "overlay_ModelA.png").exists())
+            self.assertTrue((Path(tmpdir) / "overlay_ModelB.png").exists())
+
+    def test_resize_overlay_arrays_downscales_large_inputs(self) -> None:
+        plot_results = _reload_module("evaluation.plot_results")
+
+        rgb_img = np.zeros((5000, 2500, 3), dtype=np.float32)
+        gt_mask = np.zeros((5000, 2500), dtype=np.uint8)
+        pred_mask = np.zeros((5000, 2500), dtype=np.uint8)
+
+        resized_image, resized_gt, resized_preds = plot_results._resize_overlay_arrays(
+            rgb_img, gt_mask, [pred_mask], max_dim=2048
+        )
+
+        self.assertEqual(resized_image.shape[:2], resized_gt.shape)
+        self.assertEqual(resized_preds[0].shape, resized_gt.shape)
+        self.assertLessEqual(max(resized_image.shape[:2]), 2048)
+        self.assertGreater(min(resized_image.shape[:2]), 0)
+
 
 class EvaluateSampleLoadingTests(unittest.TestCase):
     def test_validate_sample_data_rejects_out_of_range_labels(self) -> None:
