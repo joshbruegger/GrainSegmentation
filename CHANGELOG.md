@@ -1,6 +1,31 @@
 # CHANGELOG
 
 
+## v0.11.0 (2026-03-11)
+
+### Bug Fixes
+
+- Split qualitative overlays by model
+  ([`600c5ac`](https://github.com/joshbruegger/GrainSegmentation/commit/600c5ac6cb212a5dc99cc4c6bd919f8a254cbca1))
+
+Make overlay outputs easier to inspect on large TIFF evaluations by writing one red-tinted image per
+  model and ground truth instead of a single montage.
+
+### Features
+
+- Add reusable evaluation slurm workflow
+  ([`5565f3c`](https://github.com/joshbruegger/GrainSegmentation/commit/5565f3ca4886deb273d92673e0079320f7ad19d7))
+
+### Refactoring
+
+- Use spatial holdout validation
+  ([`863cca8`](https://github.com/joshbruegger/GrainSegmentation/commit/863cca8120aec7c6c3217bef8066e8cc921451c6))
+
+Align tuning and final training around a single spatial validation holdout so early stopping and
+  checkpointing use the same signal. Keep low-coverage edge regions out of validation to make the
+  holdout more informative.
+
+
 ## v0.10.0 (2026-03-10)
 
 ### Bug Fixes
