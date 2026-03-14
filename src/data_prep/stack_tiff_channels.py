@@ -26,14 +26,18 @@ def _to_channel_first_uint8(image: np.ndarray) -> np.ndarray:
             f"Expected an RGB image with 3 dimensions, got shape {image.shape}."
         )
 
-    if image.shape[-1] != 3:
-        raise ValueError(
-            "Expected an RGB image in (height, width, channel) order with 3 channels, "
-            f"got shape {image.shape}."
-        )
-
     image_uint8 = np.clip(image, 0, 255).astype(np.uint8)
-    return np.transpose(image_uint8, (2, 0, 1))
+
+    if image_uint8.shape[-1] == 3:
+        return np.transpose(image_uint8, (2, 0, 1))
+
+    if image_uint8.shape[0] == 3:
+        return image_uint8
+
+    raise ValueError(
+        "Expected an RGB image with 3 channels in either (height, width, channel) "
+        f"or (channel, height, width) order, got shape {image.shape}."
+    )
 
 
 def stack_tiff_channels(input_dir: str | Path, output_file: str | Path) -> Path:
@@ -69,7 +73,7 @@ def stack_tiff_channels(input_dir: str | Path, output_file: str | Path) -> Path:
 
     stacked = np.concatenate(stacked_images, axis=0).astype(np.uint8, copy=False)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(output_path, stacked)
+    tifffile.imwrite(output_path, stacked, photometric="rgb", planarconfig="separate")
     return output_path
 
 

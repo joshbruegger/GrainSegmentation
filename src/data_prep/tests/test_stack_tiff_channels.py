@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -75,6 +76,38 @@ class StackTiffChannelsTests(unittest.TestCase):
             self.assertEqual(result.shape, (6, 2, 2))
             np.testing.assert_array_equal(result, expected)
 
+    def test_stack_tiff_channels_accepts_channel_first_rgb_input(self) -> None:
+        module = _load_module()
+
+        channel_first = np.array(
+            [
+                [[1, 2], [3, 4]],
+                [[5, 6], [7, 8]],
+                [[9, 10], [11, 12]],
+            ],
+            dtype=np.uint8,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            input_dir = tmp_path / "inputs"
+            input_dir.mkdir()
+            output_path = tmp_path / "stacked_output.tif"
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                tifffile.imwrite(
+                    input_dir / "channel_first.tif",
+                    channel_first,
+                    photometric="rgb",
+                    planarconfig="separate",
+                )
+
+            module.stack_tiff_channels(input_dir, output_path)
+
+            result = tifffile.imread(output_path)
+            np.testing.assert_array_equal(result, channel_first)
+
     def test_stack_tiff_channels_rejects_non_rgb_stacks(self) -> None:
         module = _load_module()
 
@@ -83,6 +116,7 @@ class StackTiffChannelsTests(unittest.TestCase):
                 [[1, 2], [3, 4]],
                 [[5, 6], [7, 8]],
                 [[9, 10], [11, 12]],
+                [[13, 14], [15, 16]],
             ],
             dtype=np.uint8,
         )
