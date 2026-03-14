@@ -154,6 +154,7 @@ TRAIN_CMD+=(
     "${CHECKPOINT_ARGS[@]}"
     --output-model "$OUTPUT_MODEL"
     --patch-size 1024
+    --split-tile-size 4096
     --patch-overlap 0.5
     --tune-epochs 50
     --num-inputs "$NUM_INPUTS"

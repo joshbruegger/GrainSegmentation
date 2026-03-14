@@ -30,7 +30,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fine-tune multi-input U-Net from raster masks."
     )
-    parser.add_argument("--image-dir", required=True, help="Directory of input images")
+    parser.add_argument(
+        "--image-dir",
+        required=True,
+        help="Directory of input images",
+    )
     parser.add_argument(
         "--mask-dir",
         required=True,
@@ -47,9 +51,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to a saved final-training checkpoint to resume (.keras).",
     )
     parser.add_argument(
-        "--output-model", required=True, help="Path to save the fine-tuned model"
+        "--output-model",
+        required=True,
+        help="Path to save the fine-tuned model",
     )
-    parser.add_argument("--patch-size", type=int, default=3008)
+    parser.add_argument(
+        "--patch-size",
+        type=int,
+        default=1024,
+    )
     parser.add_argument(
         "--patch-overlap",
         type=float,
@@ -119,8 +129,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--split-tile-size",
         type=int,
-        default=0,
-        help="Grid tile size for spatial split (defaults to patch size).",
+        default=4096,
+        help="Grid tile size for spatial split (defaults to 4x patch size).",
     )
     parser.add_argument(
         "--split-coverage-bins",
@@ -157,7 +167,7 @@ def main(argv: list[str] | None = None) -> None:
     current_dir = os.path.dirname(__file__)
     sys.path.append(current_dir)
 
-    split_tile_size = args.split_tile_size or args.patch_size
+    split_tile_size = args.split_tile_size or args.patch_size * 2
     stride = int(args.patch_size * (1 - args.patch_overlap))
     _print_start_message(args, stride=stride, split_tile_size=split_tile_size)
 

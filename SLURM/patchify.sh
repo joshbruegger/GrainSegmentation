@@ -24,7 +24,7 @@ uv run python -u split_tiff_gpkg_to_yolo.py \
     --output-dir "$WORK_DIR/PPL" \
     --patch-size 1024 \
     --patch-overlap 0.5 \
-    --tile-size 1024 \
+    --tile-size 4096 \
     --validation-fraction 0.2 \
     --random-state 42
 
@@ -34,7 +34,7 @@ uv run python -u split_tiff_gpkg_to_yolo.py \
     --output-dir "$WORK_DIR/PPLPPXblend" \
     --patch-size 1024 \
     --patch-overlap 0.5 \
-    --tile-size 1024 \
+    --tile-size 4096 \
     --validation-fraction 0.2 \
     --random-state 42
 
@@ -44,7 +44,7 @@ uv run python -u split_tiff_gpkg_to_yolo.py \
     --output-dir "$WORK_DIR/PPL+PPXblend" \
     --patch-size 1024 \
     --patch-overlap 0.5 \
-    --tile-size 1024 \
+    --tile-size 4096 \
     --validation-fraction 0.2 \
     --random-state 42
 
@@ -54,7 +54,7 @@ uv run python -u split_tiff_gpkg_to_yolo.py \
     --output-dir "$WORK_DIR/PPL+AllPPX" \
     --patch-size 1024 \
     --patch-overlap 0.5 \
-    --tile-size 1024 \
+    --tile-size 4096 \
     --validation-fraction 0.2 \
     --random-state 42
 
