@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.12.0 (2026-03-14)
+
+### Features
+
+- Add raster-to-gpkg export
+  ([`4c997ec`](https://github.com/joshbruegger/GrainSegmentation/commit/4c997ecf1f0f5f9b379c284795465621b1ca3c2a))
+
+- Add split TIFF+GPKG to YOLO train/val export script
+  ([`79f9330`](https://github.com/joshbruegger/GrainSegmentation/commit/79f9330fc1b349b37268c071ea2a130770592457))
+
+- Enhance SLURM scripts for raster processing and add new utilities
+  ([`539eb3d`](https://github.com/joshbruegger/GrainSegmentation/commit/539eb3d1d7aa7c6d0995e3af004f46e5fb6ac853))
+
+- Updated `evaluate_models_and_plot.sh` to include default mask extension and stem suffix. - Added
+  `merge_multichannel_tiff.sh` for merging TIFF images into a multichannel format. - Introduced
+  `raster_to_polygon.sh` for converting raster images to polygons with enhanced error handling and
+  directory processing. - Implemented `stack_tiff_channels.py` for stacking TIFF channels and added
+  corresponding tests. - Updated `.gitignore` to exclude new directories and files.
+
+
 ## v0.11.0 (2026-03-11)
 
 ### Bug Fixes
