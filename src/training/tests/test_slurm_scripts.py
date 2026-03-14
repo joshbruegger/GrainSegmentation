@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SUBMIT_SCRIPT = REPO_ROOT / "SLURM" / "submit_experiments.sh"
 TRAIN_SCRIPT = REPO_ROOT / "SLURM" / "train_unet_multi_input.sh"
 EVAL_SCRIPT = REPO_ROOT / "SLURM" / "evaluate_models_and_plot.sh"
+RASTER_TO_POLYGON_SCRIPT = REPO_ROOT / "SLURM" / "raster_to_polygon.sh"
 
 
 class SlurmScriptTests(unittest.TestCase):
@@ -174,8 +175,7 @@ exit 0
             wheels_dir = scratch_root / "GrainSeg" / "wheels"
             wheels_dir.mkdir(parents=True)
             (
-                wheels_dir
-                / "tensorflow-2.17.0+nv25.2-cp312-cp312-linux_x86_64.whl"
+                wheels_dir / "tensorflow-2.17.0+nv25.2-cp312-cp312-linux_x86_64.whl"
             ).write_text("", encoding="utf-8")
 
             data_dir = scratch_root / "GrainSeg" / "dataset" / "sample" / "cropped"
@@ -233,11 +233,17 @@ exit 0
             self.assertIn("--output-json", uv_calls)
             self.assertIn("custom_model.keras", uv_calls)
             self.assertIn("--image-suffixes", uv_calls)
+            self.assertIn("--mask-ext", uv_calls)
+            self.assertIn(".tif", uv_calls)
+            self.assertIn("--mask-stem-suffix", uv_calls)
+            self.assertIn("_labels", uv_calls)
             self.assertIn("_PPL", uv_calls)
             self.assertIn("quantitative_plot.png", uv_calls)
             self.assertIn("overlay.png", uv_calls)
 
-    def test_eval_script_help_mentions_reusable_directory_and_config_inputs(self) -> None:
+    def test_eval_script_help_mentions_reusable_directory_and_config_inputs(
+        self,
+    ) -> None:
         result = subprocess.run(
             ["bash", str(EVAL_SCRIPT), "--help"],
             cwd=REPO_ROOT,
@@ -249,6 +255,185 @@ exit 0
         self.assertIn("--model-dir", result.stdout)
         self.assertIn("--config-file", result.stdout)
         self.assertIn("--output-dir", result.stdout)
+
+    def test_raster_to_polygon_script_uses_submit_dir_and_forwards_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_repo = temp_path / "repo"
+            (fake_repo / "SLURM").mkdir(parents=True)
+            (fake_repo / "src" / "data_prep").mkdir(parents=True)
+
+            prepare_env = fake_repo / "SLURM" / "prepare_env.sh"
+            prepare_env.write_text("#!/bin/bash\n:\n", encoding="utf-8")
+
+            spool_dir = temp_path / "spool"
+            spool_dir.mkdir()
+            spool_script = spool_dir / "raster_to_polygon.sh"
+            spool_script.write_text(
+                RASTER_TO_POLYGON_SCRIPT.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            uv_log = temp_path / "uv_calls.txt"
+            uv_path = fake_bin / "uv"
+            uv_path.write_text(
+                """#!/bin/bash
+printf "%s\n" "$@" >> "$UV_LOG"
+args=("$@")
+output=""
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --output) output="${args[$((i+1))]}" ;;
+  esac
+done
+if [ -n "$output" ]; then
+  mkdir -p "$(dirname "$output")"
+  : > "$output"
+fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            uv_path.chmod(
+                uv_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            scratch_root = temp_path / "scratch"
+            input_dir = scratch_root / "GrainSeg" / "eval_trials" / "preds"
+            input_dir.mkdir(parents=True)
+            input_raster = input_dir / "sample_pred.png"
+            input_raster.write_text("", encoding="utf-8")
+            output_gpkg = scratch_root / "GrainSeg" / "eval_trials" / "sample_pred.gpkg"
+
+            runtime_tmp = temp_path / "runtime_tmp"
+            runtime_tmp.mkdir()
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["UV_LOG"] = str(uv_log)
+            env["SLURM_SUBMIT_DIR"] = str(fake_repo)
+            env["TMPDIR"] = str(runtime_tmp)
+            env["SCRATCH"] = str(scratch_root)
+            env["INPUT_RASTER"] = str(input_raster)
+            env["OUTPUT_GPKG"] = str(output_gpkg)
+            env["OUTPUT_LAYER"] = "predictions"
+            env["CLASS_VALUE"] = "1"
+            env["MIN_AREA"] = "25"
+            env["NO_FLIP_Y"] = "1"
+
+            result = subprocess.run(
+                ["bash", str(spool_script)],
+                cwd=fake_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertTrue(output_gpkg.exists())
+
+            uv_calls = uv_log.read_text(encoding="utf-8")
+            self.assertIn("sync", uv_calls)
+            self.assertIn("raster_to_polygon.py", uv_calls)
+            self.assertIn("--input", uv_calls)
+            self.assertIn("--output", uv_calls)
+            self.assertIn("--output-layer", uv_calls)
+            self.assertIn("predictions", uv_calls)
+            self.assertIn("--class-value", uv_calls)
+            self.assertIn("25", uv_calls)
+            self.assertIn("--min-area", uv_calls)
+            self.assertIn("--no-flip-y", uv_calls)
+
+    def test_raster_to_polygon_script_processes_preds_directories_from_eval_dir(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_repo = temp_path / "repo"
+            (fake_repo / "SLURM").mkdir(parents=True)
+            (fake_repo / "src" / "data_prep").mkdir(parents=True)
+
+            prepare_env = fake_repo / "SLURM" / "prepare_env.sh"
+            prepare_env.write_text("#!/bin/bash\n:\n", encoding="utf-8")
+
+            spool_dir = temp_path / "spool"
+            spool_dir.mkdir()
+            spool_script = spool_dir / "raster_to_polygon.sh"
+            spool_script.write_text(
+                RASTER_TO_POLYGON_SCRIPT.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            uv_log = temp_path / "uv_calls.txt"
+            uv_path = fake_bin / "uv"
+            uv_path.write_text(
+                """#!/bin/bash
+printf "%s\n" "$@" >> "$UV_LOG"
+args=("$@")
+output=""
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --output) output="${args[$((i+1))]}" ;;
+  esac
+done
+if [ -n "$output" ]; then
+  mkdir -p "$(dirname "$output")"
+  : > "$output"
+fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            uv_path.chmod(
+                uv_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            scratch_root = temp_path / "scratch"
+            eval_dir = scratch_root / "GrainSeg" / "eval" / "run_01"
+            preds_ppl = eval_dir / "preds_unet_finetuned_PPL"
+            preds_allppx = eval_dir / "preds_unet_finetuned_PPL+AllPPX"
+            preds_ppl.mkdir(parents=True)
+            preds_allppx.mkdir(parents=True)
+            (preds_ppl / "MWD-1#121_pred.png").write_text("", encoding="utf-8")
+            (preds_allppx / "MWD-1#121_pred.png").write_text("", encoding="utf-8")
+
+            runtime_tmp = temp_path / "runtime_tmp"
+            runtime_tmp.mkdir()
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["UV_LOG"] = str(uv_log)
+            env["SLURM_SUBMIT_DIR"] = str(fake_repo)
+            env["TMPDIR"] = str(runtime_tmp)
+            env["SCRATCH"] = str(scratch_root)
+            env["EVAL_DIR"] = str(eval_dir)
+            env["CLASS_VALUE"] = "1"
+            env["MIN_AREA"] = "10"
+
+            result = subprocess.run(
+                ["bash", str(spool_script)],
+                cwd=fake_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertTrue((preds_ppl / "MWD-1#121_pred.gpkg").exists())
+            self.assertTrue((preds_allppx / "MWD-1#121_pred.gpkg").exists())
+
+            uv_calls = uv_log.read_text(encoding="utf-8")
+            self.assertIn("sync", uv_calls)
+            self.assertIn("raster_to_polygon.py", uv_calls)
+            self.assertIn("preds_unet_finetuned_PPL/MWD-1#121_pred.gpkg", uv_calls)
+            self.assertIn(
+                "preds_unet_finetuned_PPL+AllPPX/MWD-1#121_pred.gpkg",
+                uv_calls,
+            )
 
 
 if __name__ == "__main__":

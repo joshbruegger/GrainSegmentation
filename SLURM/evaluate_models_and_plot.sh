@@ -22,8 +22,8 @@ PATCH_SIZE=1024
 STRIDE=512
 BATCH_SIZE=1
 BOUNDARY_TOLERANCE=2.0
-MASK_EXT=""
-MASK_STEM_SUFFIX=""
+MASK_EXT=".tif"
+MASK_STEM_SUFFIX="_labels"
 
 function usage {
     echo "Usage: $0 --model-dir <dir> --image-dir <dir> --mask-dir <dir> --output-dir <dir> [options]"
@@ -38,8 +38,8 @@ function usage {
     echo "  --stride <int>            Evaluation stride (default: 512)"
     echo "  --batch-size <int>        Evaluation batch size (default: 1)"
     echo "  --boundary-tolerance <f>  Boundary tolerance passed to evaluate.py (default: 2.0)"
-    echo "  --mask-ext <ext>          Optional mask extension override (for evaluate.py and overlay inference)"
-    echo "  --mask-stem-suffix <s>    Optional suffix before the mask extension (default: '')"
+    echo "  --mask-ext <ext>          Optional mask extension override (default: .tif)"
+    echo "  --mask-stem-suffix <s>    Optional suffix before the mask extension (default: '_labels')"
     echo
     echo "If --config-file is omitted, known model naming presets are inferred from filenames."
     exit 1
