@@ -17,7 +17,9 @@ def _load_module():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"Missing script under test: {SCRIPT_PATH}")
 
-    spec = importlib.util.spec_from_file_location("split_tiff_gpkg_to_yolo", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "split_tiff_gpkg_to_yolo", SCRIPT_PATH
+    )
     if spec is None or spec.loader is None:
         raise AssertionError(f"Could not load module spec for {SCRIPT_PATH}")
 
@@ -31,6 +33,57 @@ def _stems(paths: list[Path]) -> set[str]:
 
 
 class SplitTiffGpkgToYoloTests(unittest.TestCase):
+    def test_parse_args_accepts_patch_overlap(self) -> None:
+        module = _load_module()
+
+        args = module._parse_args(
+            [
+                "--image",
+                "image.tif",
+                "--polygons",
+                "polygons.gpkg",
+                "--output-dir",
+                "output",
+                "--patch-size",
+                "128",
+                "--patch-overlap",
+                "0.25",
+                "--tile-size",
+                "512",
+                "--validation-fraction",
+                "0.2",
+                "--random-state",
+                "7",
+            ]
+        )
+
+        self.assertEqual(args.patch_overlap, 0.25)
+
+    def test_parse_args_rejects_patch_overlap_above_point_nine(self) -> None:
+        module = _load_module()
+
+        with self.assertRaises(SystemExit):
+            module._parse_args(
+                [
+                    "--image",
+                    "image.tif",
+                    "--polygons",
+                    "polygons.gpkg",
+                    "--output-dir",
+                    "output",
+                    "--patch-size",
+                    "128",
+                    "--patch-overlap",
+                    "0.95",
+                    "--tile-size",
+                    "512",
+                    "--validation-fraction",
+                    "0.2",
+                    "--random-state",
+                    "7",
+                ]
+            )
+
     def test_cli_writes_train_val_images_and_labels(self) -> None:
         module = _load_module()
         image = np.arange(4 * 8 * 8, dtype=np.uint8).reshape(4, 8, 8)
@@ -57,8 +110,8 @@ class SplitTiffGpkgToYoloTests(unittest.TestCase):
                 str(output_dir),
                 "--patch-size",
                 "4",
-                "--stride",
-                "4",
+                "--patch-overlap",
+                "0.0",
                 "--tile-size",
                 "4",
                 "--validation-fraction",
@@ -180,8 +233,12 @@ class SplitTiffGpkgToYoloTests(unittest.TestCase):
 
             self.assertEqual(patch.shape, (2, 4, 4))
             np.testing.assert_array_equal(patch[:, :2, :2], image[:, :2, :2])
-            np.testing.assert_array_equal(patch[:, 2:, :], np.zeros((2, 2, 4), dtype=np.uint8))
-            np.testing.assert_array_equal(patch[:, :, 2:], np.zeros((2, 4, 2), dtype=np.uint8))
+            np.testing.assert_array_equal(
+                patch[:, 2:, :], np.zeros((2, 2, 4), dtype=np.uint8)
+            )
+            np.testing.assert_array_equal(
+                patch[:, :, 2:], np.zeros((2, 4, 2), dtype=np.uint8)
+            )
 
     def test_export_clears_stale_split_files_when_rerun(self) -> None:
         module = _load_module()

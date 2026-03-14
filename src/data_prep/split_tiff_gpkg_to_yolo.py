@@ -75,7 +75,9 @@ def _format_yolo_value(value: float) -> str:
     return text
 
 
-def _iter_polygon_parts(geometry: Polygon | MultiPolygon | GeometryCollection) -> list[Polygon]:
+def _iter_polygon_parts(
+    geometry: Polygon | MultiPolygon | GeometryCollection,
+) -> list[Polygon]:
     if geometry.is_empty:
         return []
 
@@ -90,7 +92,11 @@ def _iter_polygon_parts(geometry: Polygon | MultiPolygon | GeometryCollection) -
         return [part for part in cleaned.geoms if not part.is_empty]
 
     if isinstance(cleaned, GeometryCollection):
-        return [part for part in cleaned.geoms if isinstance(part, Polygon) and not part.is_empty]
+        return [
+            part
+            for part in cleaned.geoms
+            if isinstance(part, Polygon) and not part.is_empty
+        ]
 
     return []
 
@@ -264,13 +270,28 @@ def _build_coverage_bin_ids(
     return np.digitize(coverages_arr, bin_edges[1:-1], right=True)
 
 
+def _parse_patch_overlap(value: str) -> float:
+    overlap = float(value)
+    if overlap < 0.0 or overlap > 0.9:
+        raise argparse.ArgumentTypeError("patch_overlap must be between 0.0 and 0.9")
+    return overlap
+
+
+def _stride_from_patch_overlap(patch_size: int, patch_overlap: float) -> int:
+    if patch_size <= 0:
+        raise ValueError("patch_size must be > 0")
+    if patch_overlap < 0.0 or patch_overlap > 0.9:
+        raise ValueError("patch_overlap must be between 0.0 and 0.9")
+    return round(patch_size * (1 - patch_overlap))
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--polygons", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--patch-size", type=int, required=True)
-    parser.add_argument("--stride", type=int, required=True)
+    parser.add_argument("--patch-overlap", type=_parse_patch_overlap, required=True)
     parser.add_argument("--tile-size", type=int, required=True)
     parser.add_argument("--validation-fraction", type=float, required=True)
     parser.add_argument("--random-state", type=int, required=True)
@@ -321,7 +342,9 @@ def _normalize_polygons_to_image_space(
     return polygons
 
 
-def _region_bounds(height: int, width: int, tile_size: int) -> list[tuple[int, int, int, int]]:
+def _region_bounds(
+    height: int, width: int, tile_size: int
+) -> list[tuple[int, int, int, int]]:
     if tile_size <= 0:
         raise ValueError("tile_size must be > 0")
 
@@ -435,7 +458,9 @@ def export_dataset(
                     patch_x1 = min(patch_x0 + patch_size, x1)
                     patch_bounds = (patch_y0, patch_y1, patch_x0, patch_x1)
                     patch = _extract_padded_patch(image, patch_bounds, patch_size)
-                    stem = f"region_{int(region_idx):04d}_y{patch_y0:05d}_x{patch_x0:05d}"
+                    stem = (
+                        f"region_{int(region_idx):04d}_y{patch_y0:05d}_x{patch_x0:05d}"
+                    )
                     save_patch(image_dir / f"{stem}{normalized_image_ext}", patch)
                     rows = build_yolo_rows(
                         polygons,
@@ -452,7 +477,10 @@ def main(argv: list[str] | None = None) -> None:
         polygons_path=args.polygons,
         output_dir=args.output_dir,
         patch_size=args.patch_size,
-        stride=args.stride,
+        stride=_stride_from_patch_overlap(
+            patch_size=args.patch_size,
+            patch_overlap=args.patch_overlap,
+        ),
         tile_size=args.tile_size,
         validation_fraction=args.validation_fraction,
         random_state=args.random_state,
