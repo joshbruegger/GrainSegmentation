@@ -1,6 +1,17 @@
 # CHANGELOG
 
 
+## v0.13.0 (2026-03-14)
+
+### Features
+
+- Add raster-to-polygon slurm job
+  ([`29dd8e1`](https://github.com/joshbruegger/GrainSegmentation/commit/29dd8e1c9647c72c93c629f94c1a2d416791ff1c))
+
+- Add tiff channel stacking script
+  ([`dc4abed`](https://github.com/joshbruegger/GrainSegmentation/commit/dc4abedcd334271a0776a9b08a678efb1273b744))
+
+
 ## v0.12.0 (2026-03-14)
 
 ### Features
