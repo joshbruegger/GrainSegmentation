@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v0.14.0 (2026-03-14)
+
+### Features
+
+- Add patchify script for splitting TIFF and GPKG files into YOLO format
+  ([`58c2abf`](https://github.com/joshbruegger/GrainSegmentation/commit/58c2abfc63ab39787c1e1918eb6ee1dc40239323))
+
+- Introduced `patchify.sh` to automate the process of copying input files, running the split script
+  for multiple models, and organizing output into the specified directory structure. - Updated
+  `train_unet_multi_input.sh` to include a new argument `--split-tile-size` for specifying the tile
+  size during training. - Modified argument parsing in `train_unet_multi_input.py` to accommodate
+  the new `--split-tile-size` option and adjusted default values for `--patch-size` and
+  `--split-tile-size` for consistency.
+
+
 ## v0.13.0 (2026-03-14)
 
 ### Features
