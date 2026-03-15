@@ -1,0 +1,10 @@
+[project]
+name = "yolo"
+version = "0.1.0"
+description = "YOLO26 segmentation training pipeline for GrainSegmentation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torchvision>=0.25.0",
+    "ultralytics-opencv-headless>=8.4.21",
+]

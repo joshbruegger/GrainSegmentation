@@ -9,6 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SUBMIT_SCRIPT = REPO_ROOT / "SLURM" / "submit_experiments.sh"
 TRAIN_SCRIPT = REPO_ROOT / "SLURM" / "train_unet_multi_input.sh"
+YOLO_SUBMIT_SCRIPT = REPO_ROOT / "SLURM" / "submit_yolo_experiments.sh"
+YOLO_TRAIN_SCRIPT = REPO_ROOT / "SLURM" / "train_yolo26x_seg.sh"
 EVAL_SCRIPT = REPO_ROOT / "SLURM" / "evaluate_models_and_plot.sh"
 RASTER_TO_POLYGON_SCRIPT = REPO_ROOT / "SLURM" / "raster_to_polygon.sh"
 
@@ -102,6 +104,289 @@ class SlurmScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertIn("--verbose", sbatch_args_log.read_text(encoding="utf-8"))
 
+    def test_yolo_train_script_uses_submit_dir_when_running_from_spool_copy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_repo = temp_path / "repo"
+            fake_repo.mkdir()
+            (fake_repo / "SLURM").mkdir()
+            (fake_repo / "src" / "yolo").mkdir(parents=True)
+
+            prepare_env = fake_repo / "SLURM" / "prepare_env.sh"
+            prepare_env.write_text("#!/bin/bash\n:\n", encoding="utf-8")
+
+            spool_dir = temp_path / "spool"
+            spool_dir.mkdir()
+            spool_script = spool_dir / "train_yolo26x_seg.sh"
+            spool_script.write_text(
+                YOLO_TRAIN_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            uv_log = temp_path / "uv_calls.txt"
+            uv_path = fake_bin / "uv"
+            uv_path.write_text(
+                '#!/bin/bash\nprintf "%s\n" "$@" >> "$UV_LOG"\nexit 0\n',
+                encoding="utf-8",
+            )
+            uv_path.chmod(
+                uv_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            scratch_root = temp_path / "scratch"
+            dataset_dir = (
+                scratch_root / "GrainSeg" / "dataset" / "MWD-1#121" / "yolo" / "PPL"
+            )
+            dataset_dir.mkdir(parents=True)
+            (dataset_dir / "PPL.yaml").write_text(
+                "path: .\ntrain: images/train\nval: images/val\n",
+                encoding="utf-8",
+            )
+            runtime_tmp = temp_path / "runtime_tmp"
+            runtime_tmp.mkdir()
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["UV_LOG"] = str(uv_log)
+            env["SLURM_SUBMIT_DIR"] = str(fake_repo)
+            env["TMPDIR"] = str(runtime_tmp)
+            env["SCRATCH"] = str(scratch_root)
+
+            result = subprocess.run(
+                ["bash", str(spool_script), "--variant", "PPL", "--verbose"],
+                cwd=fake_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            uv_calls = uv_log.read_text(encoding="utf-8")
+            self.assertIn("sync", uv_calls)
+            self.assertIn("train.py", uv_calls)
+            self.assertIn("--data", uv_calls)
+            self.assertIn("PPL.yaml", uv_calls)
+
+    def test_submit_yolo_experiments_forwards_verbose_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            sbatch_args_log = temp_path / "sbatch_args.txt"
+
+            sbatch_path = fake_bin / "sbatch"
+            sbatch_path.write_text(
+                '#!/bin/bash\nprintf "%s\n" "$@" > "$SBATCH_ARGS_LOG"\n',
+                encoding="utf-8",
+            )
+            sbatch_path.chmod(
+                sbatch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["SBATCH_ARGS_LOG"] = str(sbatch_args_log)
+
+            result = subprocess.run(
+                ["bash", str(YOLO_SUBMIT_SCRIPT), "--ppl", "--verbose"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            sbatch_args = sbatch_args_log.read_text(encoding="utf-8")
+            self.assertIn("train_yolo26x_seg.sh", sbatch_args)
+            self.assertIn("--verbose", sbatch_args)
+
+    def test_submit_yolo_experiments_forwards_resume_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            sbatch_args_log = temp_path / "sbatch_args.txt"
+
+            sbatch_path = fake_bin / "sbatch"
+            sbatch_path.write_text(
+                '#!/bin/bash\nprintf "%s\n" "$@" > "$SBATCH_ARGS_LOG"\n',
+                encoding="utf-8",
+            )
+            sbatch_path.chmod(
+                sbatch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["SBATCH_ARGS_LOG"] = str(sbatch_args_log)
+
+            result = subprocess.run(
+                ["bash", str(YOLO_SUBMIT_SCRIPT), "--ppl", "--resume"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("--resume", sbatch_args_log.read_text(encoding="utf-8"))
+
+    def test_submit_yolo_experiments_returns_failure_when_sbatch_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+
+            sbatch_path = fake_bin / "sbatch"
+            sbatch_path.write_text(
+                '#!/bin/bash\necho "submission failed" >&2\nexit 2\n',
+                encoding="utf-8",
+            )
+            sbatch_path.chmod(
+                sbatch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+            result = subprocess.run(
+                ["bash", str(YOLO_SUBMIT_SCRIPT), "--ppl"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("submission failed", result.stderr)
+            self.assertNotIn(
+                "Selected YOLO jobs submitted successfully!", result.stdout
+            )
+
+    def test_submit_yolo_experiments_rolls_back_queued_jobs_after_later_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            sbatch_calls = temp_path / "sbatch_calls.txt"
+            scancel_calls = temp_path / "scancel_calls.txt"
+
+            sbatch_path = fake_bin / "sbatch"
+            sbatch_path.write_text(
+                """#!/bin/bash
+count_file="${SBATCH_COUNT_FILE}"
+count=0
+if [ -f "$count_file" ]; then
+  count="$(cat "$count_file")"
+fi
+count=$((count + 1))
+printf "%s" "$count" > "$count_file"
+printf "%s\n" "$@" >> "$SBATCH_CALLS"
+if [ "$count" -eq 1 ]; then
+  echo "Submitted batch job 101"
+  exit 0
+fi
+echo "submission failed on later job" >&2
+exit 2
+""",
+                encoding="utf-8",
+            )
+            sbatch_path.chmod(
+                sbatch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            scancel_path = fake_bin / "scancel"
+            scancel_path.write_text(
+                '#!/bin/bash\nprintf "%s\n" "$@" >> "$SCANCEL_CALLS"\n',
+                encoding="utf-8",
+            )
+            scancel_path.chmod(
+                scancel_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["SBATCH_CALLS"] = str(sbatch_calls)
+            env["SBATCH_COUNT_FILE"] = str(temp_path / "sbatch_count.txt")
+            env["SCANCEL_CALLS"] = str(scancel_calls)
+
+            result = subprocess.run(
+                ["bash", str(YOLO_SUBMIT_SCRIPT), "--all"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("submission failed on later job", result.stderr)
+            self.assertTrue(scancel_calls.exists())
+            self.assertIn("101", scancel_calls.read_text(encoding="utf-8"))
+
+    def test_yolo_train_script_uses_data_yaml_stem_for_default_run_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_repo = temp_path / "repo"
+            fake_repo.mkdir()
+            (fake_repo / "SLURM").mkdir()
+            (fake_repo / "src" / "yolo").mkdir(parents=True)
+
+            prepare_env = fake_repo / "SLURM" / "prepare_env.sh"
+            prepare_env.write_text("#!/bin/bash\n:\n", encoding="utf-8")
+
+            spool_dir = temp_path / "spool"
+            spool_dir.mkdir()
+            spool_script = spool_dir / "train_yolo26x_seg.sh"
+            spool_script.write_text(
+                YOLO_TRAIN_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            uv_log = temp_path / "uv_calls.txt"
+            uv_path = fake_bin / "uv"
+            uv_path.write_text(
+                '#!/bin/bash\nprintf "%s\n" "$@" >> "$UV_LOG"\nexit 0\n',
+                encoding="utf-8",
+            )
+            uv_path.chmod(
+                uv_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            custom_yaml = temp_path / "custom-dataset.yaml"
+            custom_yaml.write_text(
+                "path: .\ntrain: images/train\nval: images/val\n",
+                encoding="utf-8",
+            )
+            runtime_tmp = temp_path / "runtime_tmp"
+            runtime_tmp.mkdir()
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["UV_LOG"] = str(uv_log)
+            env["SLURM_SUBMIT_DIR"] = str(fake_repo)
+            env["TMPDIR"] = str(runtime_tmp)
+            env["SCRATCH"] = str(temp_path / "scratch")
+
+            result = subprocess.run(
+                ["bash", str(spool_script), "--data-yaml", str(custom_yaml)],
+                cwd=fake_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            uv_calls = uv_log.read_text(encoding="utf-8").splitlines()
+            self.assertIn(str(custom_yaml), uv_calls)
+            name_idx = uv_calls.index("--name")
+            self.assertEqual(uv_calls[name_idx + 1], "custom-dataset")
+
     def test_train_script_help_mentions_verbose_flag(self) -> None:
         result = subprocess.run(
             ["bash", str(TRAIN_SCRIPT), "--help"],
@@ -113,6 +398,18 @@ class SlurmScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("--verbose", result.stdout)
         self.assertIn("validation holdout", result.stdout)
+
+    def test_yolo_train_script_help_mentions_variant_and_resume(self) -> None:
+        result = subprocess.run(
+            ["bash", str(YOLO_TRAIN_SCRIPT), "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--variant", result.stdout)
+        self.assertIn("--resume", result.stdout)
 
     def test_eval_script_uses_submit_dir_and_invokes_evaluate_and_plot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
