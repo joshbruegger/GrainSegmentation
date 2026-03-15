@@ -18,6 +18,7 @@ function usage {
     echo "  --project <path>: Output project directory (defaults to \$SCRATCH/GrainSeg/runs/yolo26-seg)"
     echo "  --resume [checkpoint]: Resume from the last run checkpoint or an explicit checkpoint path"
     echo "  --epochs <count>: Epoch count forwarded to src/yolo/train.py for fresh runs"
+    echo "  --batch <value>: Batch size forwarded to src/yolo/train.py"
     echo "  --device <value>: Ultralytics device value to forward to src/yolo/train.py"
     echo "  --verbose: Keep shell tracing messages enabled for troubleshooting"
     echo "  For variant-specific memory requests, prefer SLURM/submit_yolo_experiments.sh or override sbatch --mem."
@@ -35,6 +36,7 @@ RESUME_MODE=""
 EPOCHS=""
 DEVICE="0,1"
 VERBOSE=false
+BATCH=9
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --epochs)
             EPOCHS="$2"
+            shift 2
+            ;;
+        --batch)
+            BATCH="$2"
             shift 2
             ;;
         --device)
@@ -158,12 +164,15 @@ echo "Syncing YOLO environment..."
 cd "$REPO_ROOT/src/yolo"
 uv sync
 
+export YOLO_DISABLE_TQDM=True
 TRAIN_CMD=(
     uv run python -u train.py
     --data "$DATA_YAML"
     --name "$RUN_NAME"
     --project "$PROJECT_DIR"
     --device "$DEVICE"
+    --batch "$BATCH"
+    --weights "/scratch/s4361687/GrainSeg/pretrained/yolo26x-seg.pt"
 )
 
 if [[ -n "$EPOCHS" ]]; then

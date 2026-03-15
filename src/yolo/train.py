@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="yolo26x-seg.pt",
         help="Model weights or YAML to load for a fresh run.",
     )
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=800)
     parser.add_argument("--imgsz", type=int, default=1024)
     parser.add_argument("--batch", type=float, default=-1)
     parser.add_argument("--workers", type=int, default=16)

@@ -110,21 +110,25 @@ fi
 submitted=false
 
 if [ "$run_ppl" = true ]; then
+    echo "Submitting PPL only (1 input) job..."
     submit_job 256G Train_YOLO_PPL PPL PPL
     submitted=true
 fi
 
 if [ "$run_ppl_ppx_composite" = true ]; then
+    echo "Submitting PPLPPXBlend (1 input) job..."
     submit_job 256G Train_YOLO_PPLPPXblend PPLPPXblend PPLPPXblend
     submitted=true
 fi
 
 if [ "$run_ppl_plus_ppx_composite" = true ]; then
+    echo "Submitting PPL + PPXblend (2 inputs) job..."
     submit_job 512G Train_YOLO_PPL+PPXblend PPL+PPXblend PPL+PPXblend
     submitted=true
 fi
 
 if [ "$run_all_ppx" = true ]; then
+    echo "Submitting PPL + All PPX (7 inputs) job..."
     submit_job 950G Train_YOLO_PPL+AllPPX PPL+AllPPX PPL+AllPPX
     submitted=true
 fi
