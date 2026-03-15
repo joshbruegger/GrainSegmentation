@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v0.15.0 (2026-03-15)
+
+### Features
+
+- Add visualization script for YOLO dataset
+  ([`dada6b5`](https://github.com/joshbruegger/GrainSegmentation/commit/dada6b515bf3dda8e3474a21b0351f963ba232a7))
+
+- Introduced `visualize_dataset.py` to generate visualizations of annotated YOLO segmentation
+  samples. - Implemented argument parsing for dataset directory, output directory, number of
+  samples, and random seed. - Added functions to load dataset configuration, collect samples, and
+  save visualizations with annotations. - Created unit tests in `test_visualize_dataset.py` to
+  validate functionality and ensure correct behavior.
+
+- Add yolo26 training pipeline
+  ([`8e9a6c1`](https://github.com/joshbruegger/GrainSegmentation/commit/8e9a6c11b8dca249e86c38d8fb52601cbf6fe4c1))
+
+
 ## v0.14.0 (2026-03-14)
 
 ### Features
