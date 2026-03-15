@@ -30,6 +30,12 @@ Use `uv` from this directory:
 uv run python train.py --variant PPL --epochs 1 --project "$SCRATCH/GrainSeg/runs/yolo26-seg-dev"
 ```
 
+Save random `train` and `val` visualization samples for a YOLO dataset directory:
+
+```bash
+uv run python visualize_dataset.py "$SCRATCH/GrainSeg/dataset/MWD-1#121/yolo/PPL" --output-dir "$SCRATCH/GrainSeg/visualizations/PPL" --num 4
+```
+
 You can also override the dataset YAML directly:
 
 ```bash
