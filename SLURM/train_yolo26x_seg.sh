@@ -36,7 +36,7 @@ RESUME_MODE=""
 EPOCHS=""
 DEVICE="0,1"
 VERBOSE=false
-BATCH=9
+BATCH=40
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

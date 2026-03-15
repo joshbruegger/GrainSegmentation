@@ -4,6 +4,8 @@ from typing import Any
 
 from config import default_dataset_root, default_run_root, get_variant_config
 
+from ultralytics import settings
+
 
 @dataclass(frozen=True)
 class ResolvedVariantPaths:
@@ -52,6 +54,7 @@ def train_model(
     exist_ok: bool,
     yolo_factory=None,
 ) -> Any:
+    settings.update({"tensorboard": True})
     data_yaml_path = Path(data_yaml)
     if not data_yaml_path.exists():
         raise FileNotFoundError(f"YOLO dataset YAML not found: {data_yaml_path}")
@@ -76,6 +79,14 @@ def train_model(
             device=device,
             cache=cache,
             plots=plots,
+            optimizer="MuSGD",
+            warmup_epochs=0,
+            patience=50,
+            cos_lr=True,
+            lr0=0.001,
+            dropout=0.05,
+            flipud=0.5,
+            degrees=0.5,
         )
 
     model = yolo_factory(model_source)
@@ -92,4 +103,12 @@ def train_model(
         amp=amp,
         plots=plots,
         exist_ok=exist_ok,
+        optimizer="MuSGD",
+        warmup_epochs=0,
+        patience=50,
+        cos_lr=True,
+        lr0=0.001,
+        dropout=0.05,
+        flipud=0.5,
+        degrees=180,
     )

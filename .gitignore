@@ -8,3 +8,4 @@ logs/
 __pycache__/
 .worktrees/
 docs/
+src/yolo/yolo26n.pt
