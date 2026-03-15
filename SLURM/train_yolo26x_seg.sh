@@ -127,9 +127,31 @@ esac
 if [[ -z "$DATA_YAML" ]]; then
     echo "Copying YOLO dataset to TMPDIR..."
     TMP_YOLO_ROOT="$TMPDIR/yolo"
+    TMP_DATASET_DIR="$TMP_YOLO_ROOT/$DATASET_SUBDIR"
     mkdir -p "$TMP_YOLO_ROOT"
     cp -r "$SCRATCH/GrainSeg/dataset/MWD-1#121/yolo/$DATASET_SUBDIR" "$TMP_YOLO_ROOT/"
-    DATA_YAML="$TMP_YOLO_ROOT/$DATASET_SUBDIR/$YAML_NAME"
+    DATA_YAML="$TMP_DATASET_DIR/$YAML_NAME"
+
+    # Root the copied dataset YAML at TMPDIR so Ultralytics resolves images locally.
+    python3 - "$DATA_YAML" "$TMP_DATASET_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+yaml_path = Path(sys.argv[1])
+dataset_root = Path(sys.argv[2])
+text = yaml_path.read_text(encoding="utf-8")
+lines = text.splitlines()
+
+for index, line in enumerate(lines):
+    if line.startswith("path:"):
+        lines[index] = f"path: {dataset_root}"
+        break
+else:
+    raise SystemExit(f"Dataset YAML missing path entry: {yaml_path}")
+
+trailing_newline = "\n" if text.endswith("\n") else ""
+yaml_path.write_text("\n".join(lines) + trailing_newline, encoding="utf-8")
+PY
 fi
 
 echo "Syncing YOLO environment..."

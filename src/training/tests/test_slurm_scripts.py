@@ -170,6 +170,66 @@ class SlurmScriptTests(unittest.TestCase):
             self.assertIn("--data", uv_calls)
             self.assertIn("PPL.yaml", uv_calls)
 
+    def test_yolo_train_script_rewrites_copied_dataset_yaml_to_tmpdir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            fake_repo = temp_path / "repo"
+            fake_repo.mkdir()
+            (fake_repo / "SLURM").mkdir()
+            (fake_repo / "src" / "yolo").mkdir(parents=True)
+
+            prepare_env = fake_repo / "SLURM" / "prepare_env.sh"
+            prepare_env.write_text("#!/bin/bash\n:\n", encoding="utf-8")
+
+            spool_dir = temp_path / "spool"
+            spool_dir.mkdir()
+            spool_script = spool_dir / "train_yolo26x_seg.sh"
+            spool_script.write_text(
+                YOLO_TRAIN_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            uv_path = fake_bin / "uv"
+            uv_path.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+            uv_path.chmod(
+                uv_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+
+            scratch_root = temp_path / "scratch"
+            dataset_dir = (
+                scratch_root / "GrainSeg" / "dataset" / "MWD-1#121" / "yolo" / "PPL"
+            )
+            dataset_dir.mkdir(parents=True)
+            (dataset_dir / "PPL.yaml").write_text(
+                "path: .\ntrain: images/train\nval: images/val\n",
+                encoding="utf-8",
+            )
+            runtime_tmp = temp_path / "runtime_tmp"
+            runtime_tmp.mkdir()
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["SLURM_SUBMIT_DIR"] = str(fake_repo)
+            env["TMPDIR"] = str(runtime_tmp)
+            env["SCRATCH"] = str(scratch_root)
+
+            result = subprocess.run(
+                ["bash", str(spool_script), "--variant", "PPL"],
+                cwd=fake_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            copied_yaml = runtime_tmp / "yolo" / "PPL" / "PPL.yaml"
+            self.assertTrue(copied_yaml.exists())
+            self.assertIn(
+                f"path: {copied_yaml.parent}",
+                copied_yaml.read_text(encoding="utf-8"),
+            )
+
     def test_submit_yolo_experiments_forwards_verbose_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
