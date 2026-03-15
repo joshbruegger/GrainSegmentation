@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.16.0 (2026-03-15)
+
+### Bug Fixes
+
+- Adjusted batch size and epochs
+  ([`ef29669`](https://github.com/joshbruegger/GrainSegmentation/commit/ef296690702c0407bcfbd6895863016a5bc60336))
+
+- Update dataset YAML path handling in YOLO training script
+  ([`9cc1616`](https://github.com/joshbruegger/GrainSegmentation/commit/9cc161602a343c23e08815a4bffa1942181e40f4))
+
+- Modified `train_yolo26x_seg.sh` to copy the dataset YAML to a temporary directory and update its
+  path to ensure local resolution of images. - Added a Python script to rewrite the copied YAML file
+  with the correct dataset path. - Updated file permissions for `submit_yolo_experiments.sh` to make
+  it executable. - Introduced a new test case in `test_slurm_scripts.py` to verify the YAML path
+  rewriting functionality.
+
+### Features
+
+- Add script to split stacked TIFF channels into RGB TIFFs
+  ([`859d006`](https://github.com/joshbruegger/GrainSegmentation/commit/859d006846d37875ad871cbd81075335b0bc95a6))
+
+- Introduced `split_tiff_channels.py` to split a stacked TIFF file into individual RGB TIFF files
+  based on channel triplets. - Implemented command-line interface for specifying input file, output
+  directory, and optional filename prefix. - Added validation for input file format and channel
+  count. - Created unit tests in `test_split_tiff_channels.py` to ensure correct functionality and
+  error handling.
+
+
 ## v0.15.0 (2026-03-15)
 
 ### Features
