@@ -30,6 +30,13 @@ Use `uv` from this directory:
 uv run python train.py --variant PPL --epochs 1 --project "$SCRATCH/GrainSeg/runs/yolo26-seg-dev"
 ```
 
+Run built-in Ultralytics hyperparameter tuning with the narrowed `lr0` and `dropout`
+search space configured in `pipeline.py`:
+
+```bash
+uv run python train.py --variant PPL --tune --tune-epochs 30 --tune-iterations 50 --device 0
+```
+
 Save random `train` and `val` visualization samples for a YOLO dataset directory:
 
 ```bash
@@ -82,7 +89,8 @@ bash SLURM/submit_yolo_experiments.sh --all --resume
 
 ## Notes
 
-- Fresh runs load `yolo26x-seg.pt`.
+- Fresh runs load `yolo26l-seg.pt`.
+- Tune runs use Ultralytics' built-in tuner with the project search space for `lr0` and `dropout`.
 - Default run outputs go under `$SCRATCH/GrainSeg/runs/yolo26-seg/<run-name>/`.
 - Default resume checkpoints are resolved as `weights/last.pt` inside that run directory.
 - The SLURM wrapper stages the selected YOLO dataset directory into `TMPDIR` so dataset YAMLs with `path: .` still work as-is.

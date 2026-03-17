@@ -16,10 +16,15 @@ class _FakeYOLO:
     def __init__(self, model: str) -> None:
         self.model = model
         self.train_calls: list[dict] = []
+        self.tune_calls: list[dict] = []
         type(self).instances.append(self)
 
     def train(self, **kwargs):
         self.train_calls.append(kwargs)
+        return {"model": self.model, "kwargs": kwargs}
+
+    def tune(self, **kwargs):
+        self.tune_calls.append(kwargs)
         return {"model": self.model, "kwargs": kwargs}
 
 
@@ -67,6 +72,14 @@ class PipelineTests(unittest.TestCase):
             Path("/scratch/run-root") / "PPL" / "weights" / "last.pt",
         )
 
+    def test_build_tune_search_space_uses_requested_ranges(self) -> None:
+        pipeline = _reload_module("pipeline")
+
+        search_space = pipeline.build_tune_search_space()
+
+        self.assertEqual(search_space["lr0"], (5e-4, 1.5e-2))
+        self.assertEqual(search_space["dropout"], (0.10, 0.43))
+
     def test_train_model_uses_weights_for_fresh_runs(self) -> None:
         pipeline = _reload_module("pipeline")
 
@@ -80,7 +93,7 @@ class PipelineTests(unittest.TestCase):
                 data_yaml=data_yaml,
                 run_name="PPL",
                 project_dir=Path(tmpdir) / "runs",
-                model_source="yolo26x-seg.pt",
+                model_source="yolo26l-seg.pt",
                 resume_path=None,
                 epochs=100,
                 imgsz=1024,
@@ -94,7 +107,7 @@ class PipelineTests(unittest.TestCase):
                 yolo_factory=_FakeYOLO,
             )
 
-        self.assertEqual(result["model"], "yolo26x-seg.pt")
+        self.assertEqual(result["model"], "yolo26l-seg.pt")
         self.assertEqual(len(_FakeYOLO.instances), 1)
         self.assertEqual(_FakeYOLO.instances[0].train_calls[0]["data"], str(data_yaml))
         self.assertEqual(_FakeYOLO.instances[0].train_calls[0]["name"], "PPL")
@@ -119,7 +132,7 @@ class PipelineTests(unittest.TestCase):
                 data_yaml=data_yaml,
                 run_name="PPL",
                 project_dir=Path(tmpdir) / "runs",
-                model_source="yolo26x-seg.pt",
+                model_source="yolo26l-seg.pt",
                 resume_path=resume_path,
                 epochs=100,
                 imgsz=1024,
@@ -142,6 +155,80 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(_FakeYOLO.instances[0].train_calls[0]["workers"], 16)
         self.assertEqual(_FakeYOLO.instances[0].train_calls[0]["cache"], "disk")
         self.assertEqual(_FakeYOLO.instances[0].train_calls[0]["plots"], True)
+
+    def test_tune_model_uses_builtin_tuner_with_custom_search_space(self) -> None:
+        pipeline = _reload_module("pipeline")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_yaml = Path(tmpdir) / "dataset.yaml"
+            data_yaml.write_text(
+                "path: .\ntrain: images/train\nval: images/val\n", encoding="utf-8"
+            )
+
+            result = pipeline.tune_model(
+                data_yaml=data_yaml,
+                run_name="PPL-tune",
+                project_dir=Path(tmpdir) / "runs",
+                model_source="yolo26l-seg.pt",
+                epochs=30,
+                iterations=300,
+                imgsz=1024,
+                batch=-1,
+                workers=16,
+                device=[0, 1],
+                cache="disk",
+                amp=True,
+                resume=False,
+                exist_ok=True,
+                yolo_factory=_FakeYOLO,
+            )
+
+        self.assertEqual(result["model"], "yolo26l-seg.pt")
+        self.assertEqual(len(_FakeYOLO.instances), 1)
+        tune_call = _FakeYOLO.instances[0].tune_calls[0]
+        self.assertEqual(tune_call["data"], str(data_yaml))
+        self.assertEqual(tune_call["epochs"], 30)
+        self.assertEqual(tune_call["iterations"], 300)
+        self.assertEqual(tune_call["device"], "0,1")
+        self.assertEqual(tune_call["project"], str(Path(tmpdir) / "runs"))
+        self.assertEqual(tune_call["name"], "PPL-tune")
+        self.assertEqual(tune_call["space"]["lr0"], (5e-4, 1.5e-2))
+        self.assertEqual(tune_call["space"]["dropout"], (0.10, 0.43))
+        self.assertEqual(tune_call["lr0"], 0.004)
+        self.assertEqual(tune_call["dropout"], 0.30)
+        self.assertNotIn("resume", tune_call)
+        self.assertEqual(tune_call["plots"], False)
+        self.assertEqual(tune_call["save"], False)
+        self.assertEqual(tune_call["val"], False)
+
+    def test_tune_model_passes_resume_flag_when_requested(self) -> None:
+        pipeline = _reload_module("pipeline")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_yaml = Path(tmpdir) / "dataset.yaml"
+            data_yaml.write_text(
+                "path: .\ntrain: images/train\nval: images/val\n", encoding="utf-8"
+            )
+
+            pipeline.tune_model(
+                data_yaml=data_yaml,
+                run_name="PPL-tune",
+                project_dir=Path(tmpdir) / "runs",
+                model_source="yolo26l-seg.pt",
+                epochs=30,
+                iterations=300,
+                imgsz=1024,
+                batch=-1,
+                workers=16,
+                device=0,
+                cache="disk",
+                amp=True,
+                resume=True,
+                exist_ok=True,
+                yolo_factory=_FakeYOLO,
+            )
+
+        self.assertTrue(_FakeYOLO.instances[0].tune_calls[0]["resume"])
 
 
 if __name__ == "__main__":

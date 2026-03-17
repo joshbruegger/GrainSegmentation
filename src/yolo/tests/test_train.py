@@ -12,12 +12,22 @@ if str(REPO_YOLO) not in sys.path:
     sys.path.insert(0, str(REPO_YOLO))
 
 
-def _install_pipeline_stub(calls: list[dict]) -> None:
+def _install_pipeline_stub(
+    calls: list[dict],
+    tune_calls: list[dict] | None = None,
+    tune_result=None,
+) -> None:
     pipeline_module = types.ModuleType("pipeline")
+    captured_tune_calls = tune_calls if tune_calls is not None else []
+    captured_tune_result = tune_result
 
     def train_model(**kwargs):
         calls.append(kwargs)
         return kwargs
+
+    def tune_model(**kwargs):
+        captured_tune_calls.append(kwargs)
+        return captured_tune_result
 
     def resolve_variant_paths(*, variant_name, scratch_root=None):
         return types.SimpleNamespace(
@@ -33,6 +43,7 @@ def _install_pipeline_stub(calls: list[dict]) -> None:
         return Path(project_dir) / run_name / "weights" / "last.pt"
 
     pipeline_module.train_model = train_model
+    pipeline_module.tune_model = tune_model
     pipeline_module.resolve_variant_paths = resolve_variant_paths
     pipeline_module.default_project_dir = default_project_dir
     pipeline_module.default_resume_checkpoint = default_resume_checkpoint
@@ -54,7 +65,7 @@ class TrainCliTests(unittest.TestCase):
             module.parse_args(["--help"])
 
         self.assertEqual(exc_info.exception.code, 0)
-        self.assertIn("yolo26x-seg", buffer.getvalue())
+        self.assertIn("YOLO26 segmentation run", buffer.getvalue())
 
     def test_parse_args_requires_variant_or_data(self) -> None:
         _install_pipeline_stub([])
@@ -114,6 +125,23 @@ class TrainCliTests(unittest.TestCase):
                 ]
             )
 
+    def test_main_rejects_resume_checkpoint_when_tuning(self) -> None:
+        _install_pipeline_stub([])
+        module = _reload_module("train")
+
+        with self.assertRaisesRegex(
+            ValueError, "Ultralytics tuning does not support --resume-checkpoint"
+        ):
+            module.main(
+                [
+                    "--variant",
+                    "PPL",
+                    "--tune",
+                    "--resume-checkpoint",
+                    "/tmp/tune-last.pt",
+                ]
+            )
+
     def test_main_uses_variant_defaults_and_default_resume_checkpoint(self) -> None:
         calls: list[dict] = []
         _install_pipeline_stub(calls)
@@ -149,6 +177,37 @@ class TrainCliTests(unittest.TestCase):
         self.assertEqual(calls[0]["run_name"], "custom-run")
         self.assertEqual(calls[0]["data_yaml"], Path("/tmp/custom.yaml"))
         self.assertIsNone(calls[0]["resume_path"])
+
+    def test_main_routes_tune_runs_to_pipeline_tune_model(self) -> None:
+        calls: list[dict] = []
+        tune_calls: list[dict] = []
+        _install_pipeline_stub(calls, tune_calls)
+        module = _reload_module("train")
+
+        module.main(["--variant", "PPL", "--tune"])
+
+        self.assertEqual(calls, [])
+        self.assertEqual(len(tune_calls), 1)
+        self.assertEqual(tune_calls[0]["run_name"], "PPL")
+        self.assertEqual(
+            tune_calls[0]["data_yaml"], Path("/scratch/fake") / "PPL" / "dataset.yaml"
+        )
+        self.assertEqual(tune_calls[0]["epochs"], 30)
+        self.assertEqual(tune_calls[0]["iterations"], 300)
+        self.assertEqual(tune_calls[0]["device"], [0, 1])
+        self.assertFalse(tune_calls[0]["resume"])
+
+    def test_main_routes_tune_resume_to_pipeline_tune_model(self) -> None:
+        calls: list[dict] = []
+        tune_calls: list[dict] = []
+        _install_pipeline_stub(calls, tune_calls)
+        module = _reload_module("train")
+
+        module.main(["--variant", "PPL", "--tune", "--resume"])
+
+        self.assertEqual(calls, [])
+        self.assertEqual(len(tune_calls), 1)
+        self.assertTrue(tune_calls[0]["resume"])
 
 
 if __name__ == "__main__":

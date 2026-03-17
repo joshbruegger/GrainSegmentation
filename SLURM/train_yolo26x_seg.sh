@@ -11,15 +11,18 @@ set -euo pipefail
 REPO_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 function usage {
-    echo "Usage: $0 [--variant <name>] [--data-yaml <path>] [--run-name <name>] [--project <path>] [--resume [checkpoint]] [--epochs <count>] [--device <value>] [--verbose]"
+    echo "Usage: $0 [--variant <name>] [--data-yaml <path>] [--run-name <name>] [--project <path>] [--resume [checkpoint]] [--epochs <count>] [--tune] [--tune-epochs <count>] [--tune-iterations <count>] [--device <value>] [--verbose]"
     echo "  --variant <name>: Dataset variant to train (default: PPL)"
     echo "  --data-yaml <path>: Optional explicit dataset YAML path override"
     echo "  --run-name <name>: Stable run name (defaults to the selected variant)"
     echo "  --project <path>: Output project directory (defaults to \$SCRATCH/GrainSeg/runs/yolo26-seg)"
     echo "  --resume [checkpoint]: Resume from the last run checkpoint or an explicit checkpoint path"
     echo "  --epochs <count>: Epoch count forwarded to src/yolo/train.py for fresh runs"
+    echo "  --tune: Run Ultralytics built-in hyperparameter tuning instead of training"
+    echo "  --tune-epochs <count>: Epochs to run per tuning iteration (default: 30)"
+    echo "  --tune-iterations <count>: Number of tuning iterations (default: 300)"
     echo "  --batch <value>: Batch size forwarded to src/yolo/train.py"
-    echo "  --device <value>: Ultralytics device value to forward to src/yolo/train.py"
+    echo "  --device <value>: Ultralytics device value for training and tuning runs"
     echo "  --verbose: Keep shell tracing messages enabled for troubleshooting"
     echo "  For variant-specific memory requests, prefer SLURM/submit_yolo_experiments.sh or override sbatch --mem."
     echo "  Per the indexed @Yolo docs, resume restores saved training state; unsupported resume-time overrides are rejected."
@@ -34,9 +37,12 @@ RUN_NAME=""
 PROJECT_DIR=""
 RESUME_MODE=""
 EPOCHS=""
+TUNE=false
+TUNE_EPOCHS=""
+TUNE_ITERATIONS=""
 DEVICE="0,1"
 VERBOSE=false
-BATCH=40
+BATCH=32
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -69,6 +75,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --epochs)
             EPOCHS="$2"
+            shift 2
+            ;;
+        --tune)
+            TUNE=true
+            shift
+            ;;
+        --tune-epochs)
+            TUNE_EPOCHS="$2"
+            shift 2
+            ;;
+        --tune-iterations)
+            TUNE_ITERATIONS="$2"
             shift 2
             ;;
         --batch)
@@ -104,7 +122,7 @@ if [[ -z "$RUN_NAME" ]]; then
 fi
 
 if [[ -z "$PROJECT_DIR" ]]; then
-    PROJECT_DIR="$SCRATCH/GrainSeg/runs/yolo26-seg"
+    PROJECT_DIR="$SCRATCH/GrainSeg/runs/yolo26-seg/$VARIANT"
 fi
 
 case "$VARIANT" in
@@ -139,7 +157,7 @@ if [[ -z "$DATA_YAML" ]]; then
     DATA_YAML="$TMP_DATASET_DIR/$YAML_NAME"
 
     # Root the copied dataset YAML at TMPDIR so Ultralytics resolves images locally.
-    python3 - "$DATA_YAML" "$TMP_DATASET_DIR" <<'PY'
+    uv run python - "$DATA_YAML" "$TMP_DATASET_DIR" <<'PY'
 from pathlib import Path
 import sys
 
@@ -172,11 +190,23 @@ TRAIN_CMD=(
     --project "$PROJECT_DIR"
     --device "$DEVICE"
     --batch "$BATCH"
-    --weights "/scratch/s4361687/GrainSeg/pretrained/yolo26x-seg.pt"
+    --weights "/scratch/s4361687/GrainSeg/pretrained/yolo26l-seg.pt"
 )
 
 if [[ -n "$EPOCHS" ]]; then
     TRAIN_CMD+=(--epochs "$EPOCHS")
+fi
+
+if [[ "$TUNE" == true ]]; then
+    TRAIN_CMD+=(--tune)
+fi
+
+if [[ -n "$TUNE_EPOCHS" ]]; then
+    TRAIN_CMD+=(--tune-epochs "$TUNE_EPOCHS")
+fi
+
+if [[ -n "$TUNE_ITERATIONS" ]]; then
+    TRAIN_CMD+=(--tune-iterations "$TUNE_ITERATIONS")
 fi
 
 if [[ "$DATA_OVERRIDE" == false || "$VARIANT_EXPLICIT" == true ]]; then
