@@ -1,6 +1,30 @@
 # CHANGELOG
 
 
+## v0.17.0 (2026-03-18)
+
+### Features
+
+- Enhance YOLO training and tuning capabilities
+  ([`70ab526`](https://github.com/joshbruegger/GrainSegmentation/commit/70ab52658c12a6dc47da49e49c65f538bd4477d8))
+
+- Added hyperparameter tuning options in `train_yolo26x_seg.sh` and `train.py`, allowing users to
+  specify tuning epochs and iterations. - Updated `pipeline.py` to include a new `tune_model`
+  function for executing Ultralytics' built-in hyperparameter tuning with a custom search space. -
+  Modified `submit_yolo_experiments.sh` to support a new `--tune` argument for submitting tuning
+  jobs. - Adjusted README documentation to reflect new tuning features and usage instructions. -
+  Updated tests to cover new tuning functionality and ensure correct behavior.
+
+- Enhance YOLO training scripts with learning rate and dropout parameters
+  ([`b5acae5`](https://github.com/joshbruegger/GrainSegmentation/commit/b5acae5d3a749070b650fa4d4866192c449d0862))
+
+- Updated `submit_yolo_experiments.sh` to accept learning rate and dropout as arguments for job
+  submissions. - Modified `train_yolo26x_seg.sh` to include command-line options for learning rate
+  and dropout. - Adjusted `pipeline.py` and `train.py` to utilize the new learning rate and dropout
+  parameters during model training. - Updated unit tests in `test_pipeline.py` to validate the new
+  parameters in training and tuning functions.
+
+
 ## v0.16.0 (2026-03-15)
 
 ### Bug Fixes
