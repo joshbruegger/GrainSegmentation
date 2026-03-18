@@ -39,6 +39,8 @@ submit_job() {
     local variant="$3"
     local run_name="$4"
     local batch_size="$5"
+    local lr="$6"
+    local dropout="$7"
     local output
     local job_id
 
@@ -52,7 +54,9 @@ submit_job() {
             "${resume_args[@]}" \
             "${tune_args[@]}" \
             "${verbose_args[@]}" \
-            --batch "$batch_size"
+            --batch "$batch_size" \
+            --lr "$lr" \
+            --dropout "$dropout"
     ); then
         rollback_submissions
         return 1
@@ -120,25 +124,25 @@ submitted=false
 
 if [ "$run_all_ppx" = true ]; then
     echo "Submitting PPL + All PPX (7 inputs) job..."
-    submit_job 1000G Train_YOLO_PPL+AllPPX PPL+AllPPX PPL+AllPPX 32
+    submit_job 1000G Train_YOLO_PPL+AllPPX PPL+AllPPX PPL+AllPPX 32 0.00174 0.23233
     submitted=true
 fi
 
 if [ "$run_ppl_plus_ppx_composite" = true ]; then
     echo "Submitting PPL + PPXblend (2 inputs) job..."
-    submit_job 350G Train_YOLO_PPL+PPXblend PPL+PPXblend PPL+PPXblend 32
+    submit_job 350G Train_YOLO_PPL+PPXblend PPL+PPXblend PPL+PPXblend 32 0.00152 0.33526
     submitted=true
 fi
 
 if [ "$run_ppl_ppx_composite" = true ]; then
     echo "Submitting PPLPPXBlend (1 input) job..."
-    submit_job 200G Train_YOLO_PPLPPXblend PPLPPXblend PPLPPXblend 32
+    submit_job 200G Train_YOLO_PPLPPXblend PPLPPXblend PPLPPXblend 32 0.00167 0.39719
     submitted=true
 fi
 
 if [ "$run_ppl" = true ]; then
     echo "Submitting PPL only (1 input) job..."
-    submit_job 200G Train_YOLO_PPL PPL PPL 32
+    submit_job 200G Train_YOLO_PPL PPL PPL 32 0.00132 0.36965
     submitted=true
 fi
 

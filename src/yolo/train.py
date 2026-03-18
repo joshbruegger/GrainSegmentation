@@ -44,6 +44,8 @@ def _print_start_message(args: argparse.Namespace, *, data_yaml: Path) -> None:
         ("resume_checkpoint", args.resume_checkpoint),
         ("imgsz", args.imgsz),
         ("batch", args.batch),
+        ("lr", args.lr),
+        ("dropout", args.dropout),
         ("workers", args.workers),
         ("device", args.device),
         ("cache", args.cache),
@@ -95,9 +97,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="yolo26l-seg.pt",
         help="Model weights or YAML to load for a fresh run.",
     )
-    parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--imgsz", type=int, default=1024)
     parser.add_argument("--batch", type=float, default=32)
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.001,
+        help="Initial learning rate (lr0).",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.05,
+        help="Dropout rate.",
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
         "--device",
@@ -143,7 +157,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tune-iterations",
         type=int,
-        default=70,
+        default=100,
         help="Number of tuning iterations to evaluate.",
     )
 
@@ -163,10 +177,6 @@ def main(argv: list[str] | None = None) -> None:
     if args.resume and args.resume_checkpoint:
         raise ValueError("Use only one of --resume or --resume-checkpoint.")
     if (args.resume or args.resume_checkpoint) and not args.tune:
-        if _argv_contains(raw_argv, "--epochs"):
-            raise ValueError(
-                "Ultralytics does not support overriding --epochs while resuming."
-            )
         if _argv_contains(raw_argv, "--amp", "--no-amp"):
             raise ValueError(
                 "Ultralytics does not support overriding --amp while resuming."
@@ -204,6 +214,8 @@ def main(argv: list[str] | None = None) -> None:
             iterations=args.tune_iterations,
             imgsz=args.imgsz,
             batch=batch,
+            lr0=args.lr,
+            dropout=args.dropout,
             workers=args.workers,
             device=args.device,
             cache=args.cache,
@@ -222,6 +234,8 @@ def main(argv: list[str] | None = None) -> None:
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=batch,
+        lr0=args.lr,
+        dropout=args.dropout,
         workers=args.workers,
         device=args.device,
         cache=args.cache,

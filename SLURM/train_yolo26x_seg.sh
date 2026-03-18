@@ -43,6 +43,8 @@ TUNE_ITERATIONS=""
 DEVICE="0,1"
 VERBOSE=false
 BATCH=32
+LR=""
+DROPOUT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,6 +93,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --batch)
             BATCH="$2"
+            shift 2
+            ;;
+        --lr)
+            LR="$2"
+            shift 2
+            ;;
+        --dropout)
+            DROPOUT="$2"
             shift 2
             ;;
         --device)
@@ -207,6 +217,14 @@ fi
 
 if [[ -n "$TUNE_ITERATIONS" ]]; then
     TRAIN_CMD+=(--tune-iterations "$TUNE_ITERATIONS")
+fi
+
+if [[ -n "$LR" ]]; then
+    TRAIN_CMD+=(--lr "$LR")
+fi
+
+if [[ -n "$DROPOUT" ]]; then
+    TRAIN_CMD+=(--dropout "$DROPOUT")
 fi
 
 if [[ "$DATA_OVERRIDE" == false || "$VARIANT_EXPLICIT" == true ]]; then
