@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.18.0 (2026-03-19)
+
+### Bug Fixes
+
+- Add missing dep declaration in evaluation package
+  ([`f97035a`](https://github.com/joshbruegger/GrainSegmentation/commit/f97035aaa40f5fa096606d3867a4ff061e6708ac))
+
+- Change training time
+  ([`787134b`](https://github.com/joshbruegger/GrainSegmentation/commit/787134b787d5fb2dfe82c082dc850fdd398878e0))
+
+### Features
+
+- Add script to make tuning figures
+  ([`2f2cd33`](https://github.com/joshbruegger/GrainSegmentation/commit/2f2cd337eb6e17b28ad29bfe03f3d8ccf619c307))
+
+
 ## v0.17.0 (2026-03-18)
 
 ### Features
