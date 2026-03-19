@@ -5,6 +5,8 @@ description = "YOLO26 segmentation training pipeline for GrainSegmentation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "sahi>=0.11.21",
+    "tifffile>=2024.12.12",
     "torchvision>=0.25.0",
     "ultralytics-opencv-headless>=8.4.21",
 ]

@@ -61,6 +61,41 @@ Resume an explicit checkpoint:
 uv run python train.py --data "/path/to/dataset.yaml" --name custom-run --resume-checkpoint "/path/to/last.pt"
 ```
 
+## Evaluation (`evaluate.py`)
+
+Run **Ultralytics validation** (mask mAP and related metrics on the `val:` split from the dataset YAML):
+
+```bash
+uv run python evaluate.py --mode val --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" \
+  --variant PPL --project "$SCRATCH/GrainSeg/runs/yolo26-seg-eval" --name PPL-val
+```
+
+**Benchmark** export formats (optional `--format onnx` to test a single format instead of all):
+
+```bash
+uv run python evaluate.py --mode benchmark --weights "/path/to/best.pt" \
+  --data "$SCRATCH/GrainSeg/dataset/MWD-1#121/yolo/PPL/PPL.yaml" --format onnx --device 0
+```
+
+**SAHI** tiled inference over each validation image (writes `prediction_visual.png` under `--sahi-out-dir/<stem>/`). TIFFs are loaded channel-first (`CYX`) when present so multi-channel variants match training:
+
+```bash
+uv run python evaluate.py --mode sahi --weights "/path/to/best.pt" --variant PPL \
+  --sahi-out-dir "$SCRATCH/GrainSeg/sahi-val/PPL" --slice-height 1024 --slice-width 1024
+```
+
+For full validation or SAHI over entire val sets, use the SLURM wrapper (preferred on the cluster). Quick local smoke tests may use `srun`:
+
+```bash
+srun --partition=gpu --gpus=1 uv run python evaluate.py --mode val --weights ./best.pt --variant PPL
+sbatch SLURM/eval_yolo26x_seg.sh --mode val --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" --variant PPL
+sbatch SLURM/eval_yolo26x_seg.sh --mode benchmark --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" --variant PPL --format onnx
+sbatch SLURM/eval_yolo26x_seg.sh --mode sahi --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" \
+  --variant PPL --sahi-out-dir "$SCRATCH/GrainSeg/sahi-out/PPL" --max-images 10
+```
+
+The eval SLURM script stages the dataset into `TMPDIR` like `train_yolo26x_seg.sh` unless you pass `--data-yaml` with an explicit YAML path.
+
 ## Cluster Usage
 
 Run a single SLURM job directly:
@@ -95,5 +130,5 @@ bash SLURM/submit_yolo_experiments.sh --all --resume
 - Default resume checkpoints are resolved as `weights/last.pt` inside that run directory.
 - The SLURM wrapper stages the selected YOLO dataset directory into `TMPDIR` so dataset YAMLs with `path: .` still work as-is.
 - For custom `--data-yaml` runs, the default run name comes from the YAML stem unless you pass `--run-name`.
-- Per the indexed `@Yolo` docs, resume restores the saved Ultralytics training state. This pipeline forwards only the documented safe resume overrides such as `data`, `device`, `imgsz`, `batch`, `workers`, `cache`, and `plots`.
-- Resume-time `--epochs` and `--amp` changes are rejected explicitly instead of being accepted and then silently ignored by Ultralytics.
+- Per the indexed `@Yolo` docs, resume restores the saved Ultralytics training state. This pipeline forwards resume overrides such as `data`, `device`, `imgsz`, `batch`, `workers`, `cache`, `plots`, and `epochs` (Ultralytics may still ignore some overrides depending on saved state).
+- Resume-time `--amp` / `--no-amp` changes are rejected explicitly so they are not accepted and then silently ignored by Ultralytics.
