@@ -4,7 +4,7 @@
 #SBATCH --mem=256G
 #SBATCH --cpus-per-task=16
 #SBATCH --gpus-per-node=rtx_pro_6000:2
-#SBATCH --time=12:00:00
+#SBATCH --time=03:00:00
 
 set -euo pipefail
 
