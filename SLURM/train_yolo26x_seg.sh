@@ -19,7 +19,7 @@ function usage {
     echo "  --resume [checkpoint]: Resume from the last run checkpoint or an explicit checkpoint path"
     echo "  --epochs <count>: Epoch count forwarded to src/yolo/train.py for fresh runs"
     echo "  --tune: Run Ultralytics built-in hyperparameter tuning instead of training"
-    echo "  --tune-epochs <count>: Epochs to run per tuning iteration (default: 30)"
+    echo "  --tune-epochs <count>: Epochs to run per tuning iteration (default: 20)"
     echo "  --tune-iterations <count>: Number of tuning iterations (default: 300)"
     echo "  --batch <value>: Batch size forwarded to src/yolo/train.py"
     echo "  --device <value>: Ultralytics device value for training and tuning runs"

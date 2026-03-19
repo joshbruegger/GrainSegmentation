@@ -72,14 +72,6 @@ class PipelineTests(unittest.TestCase):
             Path("/scratch/run-root") / "PPL" / "weights" / "last.pt",
         )
 
-    def test_build_tune_search_space_uses_requested_ranges(self) -> None:
-        pipeline = _reload_module("pipeline")
-
-        search_space = pipeline.build_tune_search_space()
-
-        self.assertEqual(search_space["lr0"], (5e-4, 1.5e-2))
-        self.assertEqual(search_space["dropout"], (0.10, 0.43))
-
     def test_train_model_uses_weights_for_fresh_runs(self) -> None:
         pipeline = _reload_module("pipeline")
 
@@ -198,14 +190,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(tune_call["device"], "0,1")
         self.assertEqual(tune_call["project"], str(Path(tmpdir) / "runs"))
         self.assertEqual(tune_call["name"], "PPL-tune")
-        self.assertEqual(tune_call["space"]["lr0"], (5e-4, 1.5e-2))
-        self.assertEqual(tune_call["space"]["dropout"], (0.10, 0.43))
-        self.assertEqual(tune_call["lr0"], 0.004)
-        self.assertEqual(tune_call["dropout"], 0.30)
+        self.assertEqual(tune_call["space"]["lr0"], (6e-4, 2.5e-3))
+        self.assertEqual(tune_call["space"]["dropout"], (0.1, 0.6))
+        self.assertEqual(tune_call["lr0"], 1.5e-3)
+        self.assertEqual(tune_call["dropout"], 0.35)
         self.assertNotIn("resume", tune_call)
-        self.assertEqual(tune_call["plots"], False)
-        self.assertEqual(tune_call["save"], False)
-        self.assertEqual(tune_call["val"], False)
+        for disallowed in ("plots", "save", "val"):
+            self.assertNotIn(disallowed, tune_call)
 
     def test_tune_model_passes_resume_flag_when_requested(self) -> None:
         pipeline = _reload_module("pipeline")

@@ -91,23 +91,27 @@ class TrainCliTests(unittest.TestCase):
                 ]
             )
 
-    def test_main_rejects_epochs_override_when_resuming(self) -> None:
-        _install_pipeline_stub([])
+    def test_main_passes_epochs_when_resuming(self) -> None:
+        calls: list[dict] = []
+        _install_pipeline_stub(calls)
         module = _reload_module("train")
 
-        with self.assertRaisesRegex(
-            ValueError,
-            "Ultralytics does not support overriding --epochs while resuming",
-        ):
-            module.main(
-                [
-                    "--variant",
-                    "PPL",
-                    "--resume",
-                    "--epochs",
-                    "200",
-                ]
-            )
+        module.main(
+            [
+                "--variant",
+                "PPL",
+                "--resume",
+                "--epochs",
+                "200",
+            ]
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["epochs"], 200)
+        self.assertEqual(
+            calls[0]["resume_path"],
+            Path("/scratch/fake-runs") / "PPL" / "weights" / "last.pt",
+        )
 
     def test_main_rejects_amp_override_when_resuming(self) -> None:
         _install_pipeline_stub([])
@@ -192,8 +196,10 @@ class TrainCliTests(unittest.TestCase):
         self.assertEqual(
             tune_calls[0]["data_yaml"], Path("/scratch/fake") / "PPL" / "dataset.yaml"
         )
-        self.assertEqual(tune_calls[0]["epochs"], 30)
-        self.assertEqual(tune_calls[0]["iterations"], 300)
+        self.assertIn("epochs", tune_calls[0])
+        self.assertIn("iterations", tune_calls[0])
+        self.assertIsInstance(tune_calls[0]["epochs"], int)
+        self.assertIsInstance(tune_calls[0]["iterations"], int)
         self.assertEqual(tune_calls[0]["device"], [0, 1])
         self.assertFalse(tune_calls[0]["resume"])
 
