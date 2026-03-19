@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.19.0 (2026-03-19)
+
+### Bug Fixes
+
+- Fixed outdated tests
+  ([`4d012bd`](https://github.com/joshbruegger/GrainSegmentation/commit/4d012bdab0b1e9972bd8ebd3c33b12cdd1a2779c))
+
+### Features
+
+- Added yolo evaluation
+  ([`afd0236`](https://github.com/joshbruegger/GrainSegmentation/commit/afd02367983908d0704cadc4a9516a681b610799))
+
+
 ## v0.18.0 (2026-03-19)
 
 ### Bug Fixes
