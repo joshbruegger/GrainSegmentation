@@ -17,7 +17,7 @@ mkdir -p "$REPO_ROOT/logs"
 # -----------------------------------------------------------------------------
 GRAINSEG_ROOT="${SCRATCH:-/scratch/${USER}}/GrainSeg"
 DATASET_CROPPED="$GRAINSEG_ROOT/dataset/MWD-1#121/cropped"
-MODEL_PATH="$GRAINSEG_ROOT/models/unet_finetuned_7in_PPL_AllPPX.keras"
+MODEL_PATH="$GRAINSEG_ROOT/models/unet_finetuned_PPL+AllPPX.keras"
 OUTPUT_DIR="$GRAINSEG_ROOT/runs/watershed_tune"
 
 # If non-empty, skip the model and pass --preds-dir (directory of {sample_id}_pred.png).
@@ -31,6 +31,7 @@ BATCH_SIZE=1
 MASK_EXT=".tif"
 MASK_STEM_SUFFIX="_labels"
 IMAGE_SUFFIXES=(_PPL _PPX1 _PPX2 _PPX3 _PPX4 _PPX5 _PPX6)
+IMAGE_SUFFIXES_CLI=""
 
 # Default watershed grid (override by editing the array expansions below)
 MIN_DISTANCE=(1 3 5)
@@ -40,6 +41,54 @@ MIN_AREA_PX=(0)
 EXCLUDE_BORDER=(0 1)
 
 TF_WHEEL_NAME="tensorflow-2.17.0+nv25.2-cp312-cp312-linux_x86_64.whl"
+
+function usage {
+    echo "Usage: $0 [--model-path <path>] [--num-inputs <n>] [--image-suffixes <string>]"
+    echo "         [--dataset-cropped <path>] [--output-dir <path>] [--help]"
+    echo "  --model-path <path>       U-Net .keras (ignored if PREDS_DIR is set in script)"
+    echo "  --num-inputs <n>          Number of input channels (default: 7)"
+    echo "  --image-suffixes <str>    Space-separated suffixes, e.g. '_PPL _PPX1 ...'"
+    echo "  --dataset-cropped <path>  Cropped dataset directory"
+    echo "  --output-dir <path>       Directory for CSV/JSON outputs"
+    echo "  PREDS_DIR: edit script to use cached preds instead of the model"
+    exit "${1:-1}"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model-path)
+            MODEL_PATH="$2"
+            shift 2
+            ;;
+        --num-inputs)
+            NUM_INPUTS="$2"
+            shift 2
+            ;;
+        --image-suffixes)
+            IMAGE_SUFFIXES_CLI="$2"
+            shift 2
+            ;;
+        --dataset-cropped)
+            DATASET_CROPPED="$2"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --help)
+            usage 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage
+            ;;
+    esac
+done
+
+if [ -n "$IMAGE_SUFFIXES_CLI" ]; then
+    read -r -a IMAGE_SUFFIXES <<< "$IMAGE_SUFFIXES_CLI"
+fi
 
 function require_file {
     local path="$1"
