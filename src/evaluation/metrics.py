@@ -1,5 +1,7 @@
 import numpy as np
-from scipy.ndimage import distance_transform_edt, label
+from scipy.ndimage import distance_transform_edt
+
+from evaluation.instance_masks import semantic_to_instance_label_map
 
 
 def compute_semantic_metrics(
@@ -88,9 +90,9 @@ def get_instances(semantic_mask: np.ndarray, interior_class: int = 1):
     """
     Extracts instance masks from semantic masks by finding connected components of the interior class.
     """
-    interior = semantic_mask == interior_class
-    labeled, num_features = label(interior)
-    return labeled
+    return semantic_to_instance_label_map(
+        semantic_mask, interior_class=interior_class, connectivity=1, min_area_px=0
+    )
 
 
 def compute_aji(true_instances: np.ndarray, pred_instances: np.ndarray):
