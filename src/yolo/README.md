@@ -70,31 +70,34 @@ uv run python evaluate.py --mode val --weights "$SCRATCH/GrainSeg/runs/yolo26-se
   --variant PPL --project "$SCRATCH/GrainSeg/runs/yolo26-seg-eval" --name PPL-val
 ```
 
-**Benchmark** export formats (optional `--format onnx` to test a single format instead of all):
+**`sahi`** — SAHI on a **whole held-out test TIFF** (not in the training patch set), with grain polygons from a **GeoPackage in image pixel space** (same conventions as `split_tiff_gpkg_to_yolo`). Reports **COCO mask AP** (AP, AP50, AP75, …) via `pycocotools`, comparable in definition to standard instance-seg benchmarks; this is **not** the same code path as patch `model.val()`. Use **`--output-json`** to save per-image metrics. Whole stacks can be large — prefer high-memory SLURM nodes.
 
 ```bash
-uv run python evaluate.py --mode benchmark --weights "/path/to/best.pt" \
-  --data "$SCRATCH/GrainSeg/dataset/MWD-1#121/yolo/PPL/PPL.yaml" --format onnx --device 0
+uv run python evaluate.py --mode sahi --weights "/path/to/best.pt" \
+  --test-tiff "/path/to/held-out.tif" --test-gpkg "/path/to/labels.gpkg" \
+  --slice-height 1024 --slice-width 1024 --output-json "$SCRATCH/GrainSeg/sahi-eval/test.json"
 ```
 
-**SAHI** tiled inference over each validation image (writes `prediction_visual.png` under `--sahi-out-dir/<stem>/`). TIFFs are loaded channel-first (`CYX`) when present so multi-channel variants match training:
+Batch several held-out pairs with a JSON manifest (`[{"test_tiff": "...", "test_gpkg": "..."}, ...]`):
 
 ```bash
-uv run python evaluate.py --mode sahi --weights "/path/to/best.pt" --variant PPL \
-  --sahi-out-dir "$SCRATCH/GrainSeg/sahi-val/PPL" --slice-height 1024 --slice-width 1024
+uv run python evaluate.py --mode sahi --weights "/path/to/best.pt" \
+  --manifest pairs.json --output-json all.json
 ```
 
-For full validation or SAHI over entire val sets, use the SLURM wrapper (preferred on the cluster). Quick local smoke tests may use `srun`:
+Optional **`--sahi-out-dir`** writes SAHI `prediction_visual.png` per whole-image run under that directory.
+
+For full validation or whole-tiff **sahi** runs, use the SLURM wrapper (preferred on the cluster). Quick local smoke tests may use `srun`:
 
 ```bash
 srun --partition=gpu --gpus=1 uv run python evaluate.py --mode val --weights ./best.pt --variant PPL
 sbatch SLURM/eval_yolo26x_seg.sh --mode val --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" --variant PPL
-sbatch SLURM/eval_yolo26x_seg.sh --mode benchmark --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" --variant PPL --format onnx
 sbatch SLURM/eval_yolo26x_seg.sh --mode sahi --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" \
-  --variant PPL --sahi-out-dir "$SCRATCH/GrainSeg/sahi-out/PPL" --max-images 10
+  --test-tiff "$SCRATCH/path/to/held-out.tif" --test-gpkg "$SCRATCH/path/to/held-out.gpkg" \
+  --output-json "$SCRATCH/GrainSeg/sahi-eval/metrics.json"
 ```
 
-The eval SLURM script stages the dataset into `TMPDIR` like `train_yolo26x_seg.sh` unless you pass `--data-yaml` with an explicit YAML path.
+The eval SLURM script stages the dataset into `TMPDIR` like `train_yolo26x_seg.sh` unless you pass `--data-yaml` with an explicit YAML path. **`sahi` does not use the training YAML** — it only needs weights and held-out TIFF/GPKG (or `--manifest`).
 
 ## Cluster Usage
 

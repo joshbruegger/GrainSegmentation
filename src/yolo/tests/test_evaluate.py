@@ -48,48 +48,6 @@ class EvaluateMainTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             ev.parse_args([])
 
-    def test_parse_args_sahi_requires_out_dir(self) -> None:
-        ev = _reload_evaluate()
-        with tempfile.TemporaryDirectory() as tmp:
-            y = Path(tmp) / "d.yaml"
-            y.write_text("path: .\nval: v\n", encoding="utf-8")
-            with self.assertRaises(SystemExit):
-                ev.parse_args(
-                    [
-                        "--mode",
-                        "sahi",
-                        "--weights",
-                        "/w.pt",
-                        "--data",
-                        str(y),
-                    ]
-                )
-
-    def test_main_routes_sahi(self) -> None:
-        ev = _reload_evaluate()
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            y = root / "data.yaml"
-            y.write_text("path: .\ntrain: t\nval: v\n", encoding="utf-8")
-            out = root / "sahi_out"
-            with patch.object(ev, "run_sahi") as mock_sahi:
-                ev.main(
-                    [
-                        "--mode",
-                        "sahi",
-                        "--weights",
-                        "/fake/weights.pt",
-                        "--data",
-                        str(y),
-                        "--sahi-out-dir",
-                        str(out),
-                    ]
-                )
-            mock_sahi.assert_called_once()
-            call_args, _ = mock_sahi.call_args
-            self.assertEqual(call_args[0].mode, "sahi")
-            self.assertEqual(call_args[1], y.resolve())
-
     @patch("ultralytics.YOLO")
     def test_run_val_forwards_kwargs(self, mock_yolo_cls: MagicMock) -> None:
         ev = _reload_evaluate()
@@ -118,29 +76,6 @@ class EvaluateMainTests(unittest.TestCase):
             self.assertEqual(call_kw["imgsz"], 640)
             self.assertEqual(call_kw["split"], "val")
             self.assertTrue(call_kw["save_json"])
-
-    @patch("ultralytics.utils.benchmarks.benchmark")
-    def test_run_benchmark_passes_format(self, mock_benchmark: MagicMock) -> None:
-        ev = _reload_evaluate()
-        with tempfile.TemporaryDirectory() as tmp:
-            y = Path(tmp) / "d.yaml"
-            y.write_text("path: .\nval: v\n", encoding="utf-8")
-            w = Path(tmp) / "w.pt"
-            w.write_bytes(b"")
-            args = SimpleNamespace(
-                weights=str(w),
-                data=y,
-                device="cpu",
-                imgsz=320,
-                half=False,
-                verbose=True,
-                format="onnx",
-            )
-            ev.run_benchmark(args, y)
-            mock_benchmark.assert_called_once()
-            kw = mock_benchmark.call_args.kwargs
-            self.assertEqual(kw["format"], "onnx")
-            self.assertEqual(kw["data"], str(y))
 
 
 if __name__ == "__main__":

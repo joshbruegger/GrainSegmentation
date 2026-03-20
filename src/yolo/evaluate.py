@@ -1,10 +1,11 @@
 """
-Evaluate trained YOLO segmentation models: Ultralytics val, export benchmark, or SAHI tiled prediction.
+Evaluate trained YOLO segmentation models: Ultralytics val or SAHI tiled inference on held-out TIFFs (COCO mask AP).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,18 +16,27 @@ from tifffile import TiffFile
 from config import variant_choices
 from pipeline import resolve_variant_paths
 from train import _parse_device
-from visualize_dataset import collect_samples, resolve_split_dir
+
+from coco_instance_ap import (
+    build_gt_annotations,
+    evaluate_mask_ap,
+    load_polygons_from_gpkg,
+    normalize_polygons_to_image_space,
+    object_predictions_to_coco_dt,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="YOLO26 segmentation evaluation: val, benchmark, or SAHI sliced inference."
+        description="YOLO26 segmentation evaluation: val or sahi (whole held-out TIFF + COCO mask AP)."
     )
     parser.add_argument(
         "--mode",
-        choices=("val", "benchmark", "sahi"),
+        choices=("val", "sahi"),
         required=True,
-        help="val: Ultralytics validator; benchmark: export/runtime benchmark; sahi: tiled prediction on val images.",
+        help=(
+            "val: Ultralytics validator; sahi: whole held-out TIFF + COCO mask AP vs GPKG."
+        ),
     )
     parser.add_argument(
         "--weights",
@@ -68,7 +78,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--half",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="FP16 for val/benchmark (when supported).",
+        help="FP16 for val (when supported).",
     )
     parser.add_argument(
         "--plots",
@@ -82,32 +92,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help="Save predictions JSON (val mode).",
     )
-    # benchmark
-    parser.add_argument(
-        "--format",
-        default="",
-        help="Export format for benchmark only (e.g. onnx). Empty = all formats.",
-    )
-    parser.add_argument(
-        "--verbose",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Verbose benchmark logging.",
-    )
-    # sahi
+    # sahi (tiled inference on whole TIFFs)
     parser.add_argument("--slice-height", type=int, default=1024)
     parser.add_argument("--slice-width", type=int, default=1024)
     parser.add_argument(
         "--overlap-height-ratio",
         type=float,
         default=0.2,
-        help="Slice overlap ratio (SAHI).",
+        help="Slice overlap ratio (sahi mode).",
     )
     parser.add_argument(
         "--overlap-width-ratio",
         type=float,
         default=0.2,
-        help="Slice overlap ratio (SAHI).",
+        help="Slice overlap ratio (sahi mode).",
     )
     parser.add_argument(
         "--conf",
@@ -116,23 +114,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Confidence threshold for SAHI AutoDetectionModel.",
     )
     parser.add_argument(
+        "--test-tiff",
+        type=Path,
+        default=None,
+        help="Held-out GeoTIFF path (required for sahi unless --manifest).",
+    )
+    parser.add_argument(
+        "--test-gpkg",
+        type=Path,
+        default=None,
+        help="Ground-truth GeoPackage with grain polygons (sahi mode).",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="JSON list of {test_tiff, test_gpkg} pairs for batch sahi evaluation.",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        default=None,
+        help="Write sahi metrics JSON to this path.",
+    )
+    parser.add_argument(
         "--sahi-out-dir",
         type=Path,
         default=None,
-        help="Directory for SAHI prediction_visual.png per image.",
-    )
-    parser.add_argument(
-        "--max-images",
-        type=int,
-        default=None,
-        help="Limit SAHI val images processed (debug/smoke).",
+        help="Optional: save SAHI prediction_visual.png per dataset under this directory.",
     )
 
     args = parser.parse_args(argv)
-    if not args.variant and not args.data:
+    if args.mode == "sahi":
+        if args.manifest is not None:
+            pass
+        elif args.test_tiff is not None and args.test_gpkg is not None:
+            pass
+        else:
+            parser.error("sahi requires --manifest or both --test-tiff and --test-gpkg")
+    elif not args.variant and not args.data:
         parser.error("one of --variant or --data is required")
-    if args.mode == "sahi" and args.sahi_out_dir is None:
-        parser.error("--sahi-out-dir is required for --mode sahi")
     if args.slice_height <= 0 or args.slice_width <= 0:
         parser.error("slice dimensions must be positive")
     return args
@@ -241,37 +262,29 @@ def run_val(args: argparse.Namespace, data_yaml: Path) -> Any:
     return model.val(**val_kwargs)
 
 
-def run_benchmark(args: argparse.Namespace, data_yaml: Path) -> Any:
-    from ultralytics.utils.benchmarks import benchmark
+def _load_sahi_pairs(args: argparse.Namespace) -> list[tuple[Path, Path]]:
+    if args.manifest is not None:
+        raw = json.loads(args.manifest.read_text(encoding="utf-8"))
+        pairs: list[tuple[Path, Path]] = []
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise ValueError(f"manifest[{index}] must be an object")
+            tiff = entry.get("test_tiff") or entry.get("tiff")
+            gpkg = entry.get("test_gpkg") or entry.get("gpkg")
+            if not tiff or not gpkg:
+                raise ValueError(
+                    f"manifest[{index}] needs test_tiff and test_gpkg keys"
+                )
+            pairs.append((Path(tiff).resolve(), Path(gpkg).resolve()))
+        return pairs
+    return [(args.test_tiff.resolve(), args.test_gpkg.resolve())]
 
-    device = _parse_device(args.device)
-    return benchmark(
-        model=str(Path(args.weights).resolve()),
-        data=str(data_yaml),
-        imgsz=args.imgsz,
-        half=args.half,
-        device=device,
-        verbose=args.verbose,
-        format=args.format.strip(),
-    )
 
-
-def run_sahi(args: argparse.Namespace, data_yaml: Path) -> None:
+def run_sahi(args: argparse.Namespace) -> dict[str, Any]:
     from sahi import AutoDetectionModel
     from sahi.predict import get_sliced_prediction
 
-    dataset_root, config = load_dataset_config_from_yaml(data_yaml)
-    samples = collect_samples(dataset_root, config, "val")
-    if not samples:
-        split_path = config.get("val", "")
-        resolved = resolve_split_dir(dataset_root, split_path) if split_path else None
-        raise FileNotFoundError(
-            f"No val samples with paired labels under {resolved or dataset_root}"
-        )
-
-    if args.max_images is not None:
-        samples = samples[: args.max_images]
-
+    pairs = _load_sahi_pairs(args)
     device = device_for_sahi(_parse_device(args.device))
     detection_model = AutoDetectionModel.from_pretrained(
         model_type="ultralytics",
@@ -280,11 +293,22 @@ def run_sahi(args: argparse.Namespace, data_yaml: Path) -> None:
         device=device,
     )
 
-    out_dir = args.sahi_out_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    per_image: list[dict[str, Any]] = []
+    for image_id, (tiff_path, gpkg_path) in enumerate(pairs, start=1):
+        if not tiff_path.is_file():
+            raise FileNotFoundError(f"test TIFF not found: {tiff_path}")
+        if not gpkg_path.is_file():
+            raise FileNotFoundError(f"test GPKG not found: {gpkg_path}")
 
-    for image_path, _label_path in samples:
-        image = load_image_for_yolo(image_path)
+        image = load_image_for_yolo(tiff_path)
+        height, width = image.shape[:2]
+        polygons = normalize_polygons_to_image_space(load_polygons_from_gpkg(gpkg_path))
+        gt_anns = build_gt_annotations(
+            polygons,
+            image_id=image_id,
+            height=height,
+            width=width,
+        )
         result = get_sliced_prediction(
             image,
             detection_model,
@@ -294,22 +318,81 @@ def run_sahi(args: argparse.Namespace, data_yaml: Path) -> None:
             overlap_width_ratio=args.overlap_width_ratio,
             verbose=0,
         )
-        subdir = out_dir / image_path.stem
-        subdir.mkdir(parents=True, exist_ok=True)
-        result.export_visuals(export_dir=str(subdir), file_name="prediction_visual")
-        print(f"SAHI: wrote {subdir / 'prediction_visual.png'}")
+        dt_anns = object_predictions_to_coco_dt(
+            result.object_prediction_list,
+            image_id=image_id,
+            height=height,
+            width=width,
+        )
+        if args.sahi_out_dir is not None:
+            out_root = args.sahi_out_dir.resolve()
+            out_root.mkdir(parents=True, exist_ok=True)
+            sub = out_root / tiff_path.stem
+            sub.mkdir(parents=True, exist_ok=True)
+            result.export_visuals(export_dir=str(sub), file_name="prediction_visual")
+
+        summary = evaluate_mask_ap(
+            image_id=image_id,
+            file_name=tiff_path.name,
+            height=height,
+            width=width,
+            gt_annotations=gt_anns,
+            dt_annotations=dt_anns,
+        )
+        row: dict[str, Any] = {
+            "test_tiff": str(tiff_path),
+            "test_gpkg": str(gpkg_path),
+            "image_id": image_id,
+            "gt_instances": len(gt_anns),
+            "pred_instances": len(dt_anns),
+        }
+        row.update(summary.to_dict())
+        per_image.append(row)
+        print(
+            f"{tiff_path.name}: AP={summary.ap_50_95:.4f} AP50={summary.ap_50:.4f} "
+            f"GT={len(gt_anns)} Pred={len(dt_anns)}"
+        )
+
+    mean_keys = (
+        "AP",
+        "AP50",
+        "AP75",
+        "APs",
+        "APm",
+        "APl",
+        "AR1",
+        "AR10",
+        "AR100",
+    )
+    aggregate: dict[str, Any] = {"per_image": per_image}
+    if len(per_image) == 1:
+        for key in mean_keys:
+            aggregate[f"mean_{key}"] = float(per_image[0][key])
+    else:
+        for key in mean_keys:
+            values = [
+                float(row[key])
+                for row in per_image
+                if np.isfinite(row[key]) and row[key] >= 0
+            ]
+            aggregate[f"mean_{key}"] = (
+                float(np.mean(values)) if values else float("nan")
+            )
+    if args.output_json is not None:
+        args.output_json.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
+        print(f"Wrote metrics JSON to {args.output_json}")
+    return aggregate
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    data_yaml = _resolve_data_yaml(args)
 
-    if args.mode == "val":
-        run_val(args, data_yaml)
-    elif args.mode == "benchmark":
-        run_benchmark(args, data_yaml)
-    else:
-        run_sahi(args, data_yaml)
+    if args.mode == "sahi":
+        run_sahi(args)
+        return
+
+    data_yaml = _resolve_data_yaml(args)
+    run_val(args, data_yaml)
 
 
 if __name__ == "__main__":

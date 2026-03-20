@@ -11,8 +11,8 @@ set -euo pipefail
 REPO_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 function usage {
-    echo "Usage: $0 --mode <val|benchmark|sahi> --weights <path-to.pt> [options]"
-    echo "  --mode: val (Ultralytics validator), benchmark (export/runtime), or sahi (tiled val inference)"
+    echo "Usage: $0 --mode <val|sahi> --weights <path-to.pt> [options]"
+    echo "  --mode: val (Ultralytics validator) or sahi (whole held-out TIFF + COCO mask AP)"
     echo "  --weights: Checkpoint path, e.g. .../weights/best.pt"
     echo "  --variant <name>: Dataset variant (default: PPL)"
     echo "  --data-yaml <path>: Override dataset YAML (skips TMPDIR dataset staging when set explicitly)"
@@ -21,13 +21,11 @@ function usage {
     echo "  --batch <int>: Val batch size (default: 16)"
     echo "  --project <path>: Val project dir for artifacts"
     echo "  --name <str>: Val run name (default: eval)"
-    echo "  --format <str>: Benchmark export format only (e.g. onnx; empty = all)"
-    echo "  --sahi-out-dir <path>: Required for mode=sahi; output root for prediction visuals"
-    echo "  --slice-height/--slice-width: SAHI slice size (default: 1024)"
-    echo "  --overlap-height-ratio / --overlap-width-ratio: SAHI overlap (default: 0.2)"
-    echo "  --max-images <n>: SAHI only — cap number of val images"
+    echo "  --slice-height/--slice-width: SAHI slice size for mode=sahi (default: 1024)"
+    echo "  --overlap-height-ratio / --overlap-width-ratio: SAHI overlap for mode=sahi (default: 0.2)"
+    echo "  sahi: --test-tiff and --test-gpkg, or --manifest <json>; optional --output-json, --sahi-out-dir"
     echo "  --verbose: Bash xtrace"
-    echo "  Stage YOLO dataset into TMPDIR like train_yolo26x_seg.sh unless --data-yaml is set."
+    echo "  Stage YOLO dataset into TMPDIR like train_yolo26x_seg.sh unless --data-yaml is set (not used for sahi)."
     exit 1
 }
 
@@ -40,14 +38,16 @@ IMGSZ=1024
 BATCH=16
 PROJECT_DIR=""
 RUN_NAME="eval"
-FORMAT=""
-SAHI_OUT=""
 SLICE_H=1024
 SLICE_W=1024
 OV_H=0.2
 OV_W=0.2
-MAX_IMAGES=""
 VERBOSE=false
+TEST_TIFF=""
+TEST_GPKG=""
+MANIFEST=""
+OUTPUT_JSON=""
+SAHI_OUT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -87,14 +87,6 @@ while [[ $# -gt 0 ]]; do
             RUN_NAME="$2"
             shift 2
             ;;
-        --format)
-            FORMAT="$2"
-            shift 2
-            ;;
-        --sahi-out-dir)
-            SAHI_OUT="$2"
-            shift 2
-            ;;
         --slice-height)
             SLICE_H="$2"
             shift 2
@@ -111,8 +103,24 @@ while [[ $# -gt 0 ]]; do
             OV_W="$2"
             shift 2
             ;;
-        --max-images)
-            MAX_IMAGES="$2"
+        --test-tiff)
+            TEST_TIFF="$2"
+            shift 2
+            ;;
+        --test-gpkg)
+            TEST_GPKG="$2"
+            shift 2
+            ;;
+        --manifest)
+            MANIFEST="$2"
+            shift 2
+            ;;
+        --output-json)
+            OUTPUT_JSON="$2"
+            shift 2
+            ;;
+        --sahi-out-dir)
+            SAHI_OUT="$2"
             shift 2
             ;;
         --verbose)
@@ -134,13 +142,51 @@ if [[ -z "$MODE" || -z "$WEIGHTS" ]]; then
     usage
 fi
 
-if [[ "$MODE" == "sahi" && -z "$SAHI_OUT" ]]; then
-    echo "error: --sahi-out-dir is required for mode=sahi" >&2
-    usage
+if [[ "$MODE" == "sahi" ]]; then
+    if [[ -z "$MANIFEST" && (-z "$TEST_TIFF" || -z "$TEST_GPKG") ]]; then
+        echo "error: sahi requires --manifest or both --test-tiff and --test-gpkg" >&2
+        usage
+    fi
 fi
 
 if [[ "$VERBOSE" == true ]]; then
     set -x
+fi
+
+if [[ "$MODE" == "sahi" ]]; then
+    source "$REPO_ROOT/SLURM/prepare_env.sh"
+    echo "Syncing YOLO environment..."
+    cd "$REPO_ROOT/src/yolo"
+    uv sync
+    export YOLO_DISABLE_TQDM=True
+    EVAL_CMD=(
+        uv run python -u evaluate.py
+        --mode sahi
+        --weights "$WEIGHTS"
+        --device "$DEVICE"
+        --slice-height "$SLICE_H"
+        --slice-width "$SLICE_W"
+        --overlap-height-ratio "$OV_H"
+        --overlap-width-ratio "$OV_W"
+    )
+    if [[ -n "$MANIFEST" ]]; then
+        EVAL_CMD+=(--manifest "$MANIFEST")
+    else
+        EVAL_CMD+=(--test-tiff "$TEST_TIFF" --test-gpkg "$TEST_GPKG")
+    fi
+    if [[ -n "$OUTPUT_JSON" ]]; then
+        EVAL_CMD+=(--output-json "$OUTPUT_JSON")
+    fi
+    if [[ -n "$SAHI_OUT" ]]; then
+        EVAL_CMD+=(--sahi-out-dir "$SAHI_OUT")
+    fi
+    "${EVAL_CMD[@]}"
+    exit 0
+fi
+
+if [[ "$MODE" != "val" ]]; then
+    echo "error: --mode must be val or sahi (got $MODE)" >&2
+    usage
 fi
 
 source "$REPO_ROOT/SLURM/prepare_env.sh"
@@ -214,23 +260,6 @@ EVAL_CMD=(
 
 if [[ -n "$PROJECT_DIR" ]]; then
     EVAL_CMD+=(--project "$PROJECT_DIR")
-fi
-
-if [[ -n "$FORMAT" ]]; then
-    EVAL_CMD+=(--format "$FORMAT")
-fi
-
-if [[ "$MODE" == "sahi" ]]; then
-    EVAL_CMD+=(
-        --sahi-out-dir "$SAHI_OUT"
-        --slice-height "$SLICE_H"
-        --slice-width "$SLICE_W"
-        --overlap-height-ratio "$OV_H"
-        --overlap-width-ratio "$OV_W"
-    )
-    if [[ -n "$MAX_IMAGES" ]]; then
-        EVAL_CMD+=(--max-images "$MAX_IMAGES")
-    fi
 fi
 
 "${EVAL_CMD[@]}"
