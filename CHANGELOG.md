@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.20.0 (2026-03-20)
+
+### Features
+
+- **evaluation**: Instance masks from semantic preds (CC + watershed)
+  ([`3e7a81a`](https://github.com/joshbruegger/GrainSegmentation/commit/3e7a81a1e8b724b28970c38acafbf412c4d2d7b0))
+
+### Refactoring
+
+- **yolo**: Simplify eval to val/sahi, rename sahi-coco
+  ([`676bb09`](https://github.com/joshbruegger/GrainSegmentation/commit/676bb099f9d711c38d3b8493fa237eb3f077fde3))
+
+
 ## v0.19.0 (2026-03-19)
 
 ### Bug Fixes
