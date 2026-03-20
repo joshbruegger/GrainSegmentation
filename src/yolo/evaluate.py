@@ -71,7 +71,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--name",
         default="test",
-        help="Run name under project for val-mode (test split) outputs.",
+        help=(
+            "Ultralytics val run name (subdirectory under the val project; default "
+            "project if --project omitted). Val mode only; ignored in sahi."
+        ),
     )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
@@ -256,14 +259,24 @@ def run_val(args: argparse.Namespace, data_yaml: Path) -> Any:
     )
     if args.save_json:
         val_kwargs["save_json"] = True
+    val_kwargs["name"] = args.name
     if args.project is not None:
         val_kwargs["project"] = str(args.project.resolve())
-        val_kwargs["name"] = args.name
     return model.val(**val_kwargs)
+
+
+def _resolve_manifest_path(raw: str, manifest_dir: Path) -> Path:
+    """Resolve a manifest entry path relative to the manifest file when relative."""
+    p = Path(raw)
+    if p.is_absolute():
+        return p.resolve()
+    return (manifest_dir / p).resolve()
 
 
 def _load_sahi_pairs(args: argparse.Namespace) -> list[tuple[Path, Path]]:
     if args.manifest is not None:
+        manifest_path = args.manifest.resolve()
+        manifest_dir = manifest_path.parent
         raw = json.loads(args.manifest.read_text(encoding="utf-8"))
         pairs: list[tuple[Path, Path]] = []
         for index, entry in enumerate(raw):
@@ -275,9 +288,46 @@ def _load_sahi_pairs(args: argparse.Namespace) -> list[tuple[Path, Path]]:
                 raise ValueError(
                     f"manifest[{index}] needs test_tiff and test_gpkg keys"
                 )
-            pairs.append((Path(tiff).resolve(), Path(gpkg).resolve()))
+            pairs.append(
+                (
+                    _resolve_manifest_path(str(tiff), manifest_dir),
+                    _resolve_manifest_path(str(gpkg), manifest_dir),
+                )
+            )
         return pairs
     return [(args.test_tiff.resolve(), args.test_gpkg.resolve())]
+
+
+def aggregate_sahi_means(
+    per_image: list[dict[str, Any]],
+) -> dict[str, float | None]:
+    """
+    Mean of per-image COCO summary fields. Excludes undefined sentinels (-1) and NaNs
+    so empty-GT images do not bias means toward zero.
+    Same rule for single-image and multi-image runs.
+    When no image contributes a valid value for a metric, the aggregate is None
+    (JSON null), not NaN.
+    """
+    mean_keys = (
+        "AP",
+        "AP50",
+        "AP75",
+        "APs",
+        "APm",
+        "APl",
+        "AR1",
+        "AR10",
+        "AR100",
+    )
+    out: dict[str, float | None] = {}
+    for key in mean_keys:
+        values = [
+            float(row[key])
+            for row in per_image
+            if np.isfinite(row[key]) and row[key] >= 0
+        ]
+        out[f"mean_{key}"] = float(np.mean(values)) if values else None
+    return out
 
 
 def run_sahi(args: argparse.Namespace) -> dict[str, Any]:
@@ -353,33 +403,14 @@ def run_sahi(args: argparse.Namespace) -> dict[str, Any]:
             f"GT={len(gt_anns)} Pred={len(dt_anns)}"
         )
 
-    mean_keys = (
-        "AP",
-        "AP50",
-        "AP75",
-        "APs",
-        "APm",
-        "APl",
-        "AR1",
-        "AR10",
-        "AR100",
-    )
     aggregate: dict[str, Any] = {"per_image": per_image}
-    if len(per_image) == 1:
-        for key in mean_keys:
-            aggregate[f"mean_{key}"] = float(per_image[0][key])
-    else:
-        for key in mean_keys:
-            values = [
-                float(row[key])
-                for row in per_image
-                if np.isfinite(row[key]) and row[key] >= 0
-            ]
-            aggregate[f"mean_{key}"] = (
-                float(np.mean(values)) if values else float("nan")
-            )
+    aggregate.update(aggregate_sahi_means(per_image))
     if args.output_json is not None:
-        args.output_json.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(
+            json.dumps(aggregate, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
         print(f"Wrote metrics JSON to {args.output_json}")
     return aggregate
 

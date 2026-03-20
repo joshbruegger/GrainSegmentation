@@ -20,7 +20,7 @@ function usage {
     echo "  --imgsz <int>: Input size (default: 1024)"
     echo "  --batch <int>: Val batch size (default: 16)"
     echo "  --project <path>: Val project dir for artifacts"
-    echo "  --name <str>: Val run name (default: eval)"
+    echo "  --name <str>: Val run name (default: test; val only; ignored for sahi)"
     echo "  --slice-height/--slice-width: SAHI slice size for mode=sahi (default: 1024)"
     echo "  --overlap-height-ratio / --overlap-width-ratio: SAHI overlap for mode=sahi (default: 0.2)"
     echo "  sahi: --test-tiff and --test-gpkg, or --manifest <json>; optional --output-json, --sahi-out-dir"

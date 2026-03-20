@@ -58,7 +58,7 @@ class CocoInstanceApTests(unittest.TestCase):
         self.assertEqual(summary.ap_50, 0.0)
         self.assertEqual(summary.ap_50_95, 0.0)
 
-    def test_no_gt_returns_zeros(self) -> None:
+    def test_no_gt_returns_undefined_sentinels(self) -> None:
         from coco_instance_ap import evaluate_mask_ap
 
         summary = evaluate_mask_ap(
@@ -69,7 +69,10 @@ class CocoInstanceApTests(unittest.TestCase):
             gt_annotations=[],
             dt_annotations=[],
         )
-        self.assertEqual(summary.ap_50_95, 0.0)
+        # pycocotools-style: no GT => summary metrics undefined (-1), not real zeros
+        self.assertEqual(summary.ap_50_95, -1.0)
+        self.assertEqual(summary.ap_50, -1.0)
+        self.assertEqual(summary.ap_75, -1.0)
 
     def test_object_predictions_to_coco_dt_fills_bbox(self) -> None:
         from coco_instance_ap import object_predictions_to_coco_dt

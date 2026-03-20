@@ -223,18 +223,21 @@ def evaluate_mask_ap(
     """
     Run COCO mask evaluation for a single image (image_id must match GT/DT).
     Uses category_id 1 by default (COCO-style); SAHI preds may use 0 -> remapped in dt builder.
+
+    When there is no ground truth (no GT instances), summary metrics are undefined and
+    reported as -1.0 (pycocotools/COCOeval convention), not as real zeros.
     """
     if not gt_annotations:
         return InstanceAPSummary(
-            0.0,
-            0.0,
-            0.0,
             -1.0,
             -1.0,
             -1.0,
-            0.0,
-            0.0,
-            0.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
             None,
         )
 

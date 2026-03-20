@@ -85,6 +85,12 @@ uv run python evaluate.py --mode sahi --weights "/path/to/best.pt" \
   --manifest pairs.json --output-json all.json
 ```
 
+Relative paths in the manifest are resolved **relative to the manifest file’s directory** (not the process working directory).
+
+In **`val`** mode, `--name` is always passed to Ultralytics (even if `--project` is omitted). The **`--name` flag is ignored in `sahi` mode**.
+
+In **`sahi`** JSON output, if an image has **no ground-truth instances**, COCO-style summary fields are **`-1`** (undefined), matching `pycocotools` sentinels. Aggregated `mean_*` fields omit `-1` values so empty-GT images do not pull means toward zero. If **no** image contributes a valid value for a given metric, the corresponding **`mean_*` is JSON `null`** (strict JSON; not `NaN`).
+
 Optional **`--sahi-out-dir`** writes SAHI `prediction_visual.png` per whole-image run under that directory.
 
 For full validation or whole-tiff **sahi** runs, use the SLURM wrapper (preferred on the cluster). Quick local smoke tests may use `srun`:
