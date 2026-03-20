@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v0.21.0 (2026-03-20)
+
+### Bug Fixes
+
+- **yolo**: Val name, manifest paths, SAHI metrics JSON
+  ([`7d67e4d`](https://github.com/joshbruegger/GrainSegmentation/commit/7d67e4dc3926633ee4762e45f81084b8a5765607))
+
+- Always pass --name to Ultralytics val; resolve manifest paths vs manifest dir - Empty-GT mask AP
+  uses -1 sentinels; aggregate mean_* uses null + strict JSON - mkdir for nested --output-json; docs
+  and SLURM usage aligned
+
+### Features
+
+- Add watershed validation tuning script and SLURM job
+  ([`bd33972`](https://github.com/joshbruegger/GrainSegmentation/commit/bd33972c9131ea39b77d29fe4716e4d57269e221))
+
+- Asdded script to submit watershed tuning for all variants
+  ([`d4741a8`](https://github.com/joshbruegger/GrainSegmentation/commit/d4741a82a49e18b75c95f4a7584260e730ddf841))
+
+- **yolo**: Run Ultralytics eval on test split, default name test
+  ([`cf41685`](https://github.com/joshbruegger/GrainSegmentation/commit/cf41685f6a9dad96f342d1575d955f96dc3c68f5))
+
+
 ## v0.20.0 (2026-03-20)
 
 ### Features
