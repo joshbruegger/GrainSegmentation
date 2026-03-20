@@ -35,7 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("val", "sahi"),
         required=True,
         help=(
-            "val: Ultralytics validator; sahi: whole held-out TIFF + COCO mask AP vs GPKG."
+            "val: Ultralytics validator on dataset test split; sahi: whole held-out TIFF + COCO mask AP vs GPKG."
         ),
     )
     parser.add_argument(
@@ -70,8 +70,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--name",
-        default="eval",
-        help="Run name under project for val outputs.",
+        default="test",
+        help="Run name under project for val-mode (test split) outputs.",
     )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
@@ -250,7 +250,7 @@ def run_val(args: argparse.Namespace, data_yaml: Path) -> Any:
         batch=args.batch,
         device=device,
         workers=args.workers,
-        split="val",
+        split="test",
         plots=args.plots,
         half=args.half,
     )

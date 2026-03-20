@@ -74,7 +74,7 @@ class EvaluateMainTests(unittest.TestCase):
             call_kw = model.val.call_args.kwargs
             self.assertEqual(call_kw["data"], str(y))
             self.assertEqual(call_kw["imgsz"], 640)
-            self.assertEqual(call_kw["split"], "val")
+            self.assertEqual(call_kw["split"], "test")
             self.assertTrue(call_kw["save_json"])
 
 

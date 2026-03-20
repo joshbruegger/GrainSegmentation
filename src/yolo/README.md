@@ -63,11 +63,11 @@ uv run python train.py --data "/path/to/dataset.yaml" --name custom-run --resume
 
 ## Evaluation (`evaluate.py`)
 
-Run **Ultralytics validation** (mask mAP and related metrics on the `val:` split from the dataset YAML):
+Run **Ultralytics validation** (mask mAP and related metrics on the `test:` split from the dataset YAML):
 
 ```bash
 uv run python evaluate.py --mode val --weights "$SCRATCH/GrainSeg/runs/yolo26-seg/PPL/weights/best.pt" \
-  --variant PPL --project "$SCRATCH/GrainSeg/runs/yolo26-seg-eval" --name PPL-val
+  --variant PPL --project "$SCRATCH/GrainSeg/runs/yolo26-seg-eval" --name PPL-test
 ```
 
 **`sahi`** — SAHI on a **whole held-out test TIFF** (not in the training patch set), with grain polygons from a **GeoPackage in image pixel space** (same conventions as `split_tiff_gpkg_to_yolo`). Reports **COCO mask AP** (AP, AP50, AP75, …) via `pycocotools`, comparable in definition to standard instance-seg benchmarks; this is **not** the same code path as patch `model.val()`. Use **`--output-json`** to save per-image metrics. Whole stacks can be large — prefer high-memory SLURM nodes.
