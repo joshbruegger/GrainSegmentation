@@ -108,19 +108,29 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(recorded_starts, [0, 1, 5, 6])
 
 
+def _eval_validate_args_ns(**kwargs):
+    defaults = {
+        "num_inputs": 1,
+        "image_suffixes": ["_PPL"],
+        "patch_size": 128,
+        "stride": 64,
+        "batch_size": 1,
+        "boundary_tolerance": 2.0,
+        "coco_mask_ap": False,
+        "instance_method": "cc",
+        "watershed_min_distance": 1,
+        "watershed_boundary_dilate_iter": 0,
+    }
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
 class EvaluateValidationTests(unittest.TestCase):
     def test_validate_args_rejects_non_positive_patch_size(self) -> None:
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
 
-        args = SimpleNamespace(
-            num_inputs=1,
-            image_suffixes=["_PPL"],
-            patch_size=0,
-            stride=64,
-            batch_size=1,
-            boundary_tolerance=2.0,
-        )
+        args = _eval_validate_args_ns(patch_size=0)
 
         with self.assertRaisesRegex(ValueError, "patch_size and stride must be > 0"):
             evaluate._validate_args(args)
@@ -129,13 +139,9 @@ class EvaluateValidationTests(unittest.TestCase):
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
 
-        args = SimpleNamespace(
+        args = _eval_validate_args_ns(
             num_inputs=3,
             image_suffixes=["_PPL", "_PPX1", "_PPX2"],
-            patch_size=128,
-            stride=64,
-            batch_size=1,
-            boundary_tolerance=2.0,
         )
 
         with self.assertRaisesRegex(ValueError, "num_inputs"):
@@ -145,14 +151,7 @@ class EvaluateValidationTests(unittest.TestCase):
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
 
-        args = SimpleNamespace(
-            num_inputs=1,
-            image_suffixes=["_PPL"],
-            patch_size=128,
-            stride=64,
-            batch_size=1,
-            boundary_tolerance=np.inf,
-        )
+        args = _eval_validate_args_ns(boundary_tolerance=np.inf)
 
         with self.assertRaisesRegex(
             ValueError, "boundary_tolerance must be finite and >= 0"
@@ -468,6 +467,212 @@ class EvaluateMainTests(unittest.TestCase):
             self.assertEqual(saved["heldout_section"]["boundary_f1"], 0.8)
             self.assertTrue((pred_dir / "heldout_section_pred.png").exists())
             self.assertIn("descriptive", stdout.getvalue().lower())
+
+    def test_main_coco_mask_ap_adds_coco_fields(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        from evaluation.coco_mask_ap import InstanceAPSummary
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+
+        fake_coco = InstanceAPSummary(
+            0.1,
+            0.2,
+            0.3,
+            -1.0,
+            -1.0,
+            -1.0,
+            0.4,
+            0.5,
+            0.6,
+            None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+                "--coco-mask-ap",
+            ]
+
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate, "list_samples", return_value=[sample]):
+                    with patch.object(
+                        evaluate, "_load_rgb_image", return_value=np.zeros((2, 2, 3))
+                    ):
+                        with patch.object(
+                            evaluate, "_load_raster_mask", return_value=mask
+                        ):
+                            with patch.object(
+                                evaluate,
+                                "predict_full_image",
+                                return_value=(pred, np.zeros((2, 2, 3))),
+                            ):
+                                with patch.object(
+                                    evaluate,
+                                    "compute_semantic_metrics",
+                                    return_value={
+                                        "iou_class_0": 1.0,
+                                        "dice_class_0": 1.0,
+                                        "iou_class_1": 0.75,
+                                        "dice_class_1": 0.86,
+                                        "iou_class_2": 0.5,
+                                        "dice_class_2": 0.67,
+                                    },
+                                ):
+                                    with patch.object(
+                                        evaluate,
+                                        "compute_boundary_f1",
+                                        return_value=0.8,
+                                    ):
+                                        with patch.object(
+                                            evaluate,
+                                            "compute_boundary_iou",
+                                            return_value=0.6,
+                                        ):
+                                            with patch.object(
+                                                evaluate,
+                                                "compute_aji",
+                                                return_value=0.7,
+                                            ):
+                                                with patch.object(
+                                                    evaluate,
+                                                    "evaluate_mask_ap",
+                                                    return_value=fake_coco,
+                                                ):
+                                                    evaluate.main()
+
+            saved = json.loads(output_json.read_text())
+            self.assertEqual(saved["heldout_section"]["AP"], 0.1)
+            self.assertEqual(saved["heldout_section"]["AP50"], 0.2)
+
+    def test_main_uses_selected_instance_method_for_aji_and_coco(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        cc_instances = np.array([[0, 1], [0, 1]], dtype=np.int32)
+        ws_instances = np.array([[0, 1], [0, 2]], dtype=np.int32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+                "--coco-mask-ap",
+                "--instance-method",
+                "watershed",
+            ]
+
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate, "list_samples", return_value=[sample]):
+                    with patch.object(
+                        evaluate, "_load_rgb_image", return_value=np.zeros((2, 2, 3))
+                    ):
+                        with patch.object(
+                            evaluate, "_load_raster_mask", return_value=mask
+                        ):
+                            with patch.object(
+                                evaluate,
+                                "predict_full_image",
+                                return_value=(pred, np.zeros((2, 2, 3))),
+                            ):
+                                with patch.object(
+                                    evaluate,
+                                    "compute_semantic_metrics",
+                                    return_value={
+                                        "iou_class_0": 1.0,
+                                        "dice_class_0": 1.0,
+                                        "iou_class_1": 0.75,
+                                        "dice_class_1": 0.86,
+                                        "iou_class_2": 0.5,
+                                        "dice_class_2": 0.67,
+                                    },
+                                ):
+                                    with patch.object(
+                                        evaluate,
+                                        "compute_boundary_f1",
+                                        return_value=0.8,
+                                    ):
+                                        with patch.object(
+                                            evaluate,
+                                            "compute_boundary_iou",
+                                            return_value=0.6,
+                                        ):
+                                            with patch.object(
+                                                evaluate,
+                                                "get_instances",
+                                                return_value=cc_instances,
+                                            ):
+                                                with patch.object(
+                                                    evaluate,
+                                                    "semantic_to_instance_label_map_watershed",
+                                                    return_value=ws_instances,
+                                                ):
+                                                    with patch.object(
+                                                        evaluate,
+                                                        "compute_aji",
+                                                        return_value=0.7,
+                                                    ) as compute_aji:
+                                                        with patch.object(
+                                                            evaluate,
+                                                            "instance_label_map_to_coco_gt",
+                                                            return_value=[],
+                                                        ):
+                                                            with patch.object(
+                                                                evaluate,
+                                                                "instance_label_map_to_coco_dt",
+                                                                return_value=[],
+                                                            ) as dt_builder:
+                                                                with patch.object(
+                                                                    evaluate,
+                                                                    "evaluate_mask_ap",
+                                                                ) as coco_eval:
+                                                                    coco_eval.return_value.to_dict.return_value = {
+                                                                        "AP": 0.1,
+                                                                        "AP50": 0.2,
+                                                                        "AP75": 0.3,
+                                                                        "APs": -1.0,
+                                                                        "APm": -1.0,
+                                                                        "APl": -1.0,
+                                                                        "AR1": 0.4,
+                                                                        "AR10": 0.5,
+                                                                        "AR100": 0.6,
+                                                                    }
+                                                                    evaluate.main()
+
+            compute_aji.assert_called_once_with(cc_instances, ws_instances)
+            dt_builder.assert_called_once_with(
+                ws_instances, image_id=1, height=2, width=2
+            )
 
 
 if __name__ == "__main__":

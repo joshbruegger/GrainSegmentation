@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
+    "pycocotools>=2.0.8",
     "scikit-image>=0.25.0",
     "scipy>=1.17.1",
 ]

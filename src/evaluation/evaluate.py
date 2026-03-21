@@ -12,7 +12,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from training.data import list_samples, _load_rgb_image, _load_raster_mask
 from training.model import weighted_crossentropy
+from evaluation.coco_mask_ap import (
+    aggregate_coco_means,
+    evaluate_mask_ap,
+    instance_label_map_to_coco_dt,
+    instance_label_map_to_coco_gt,
+)
 from evaluation.inference import predict_full_image
+from evaluation.instance_masks import (
+    semantic_to_instance_label_map,
+    semantic_to_instance_label_map_watershed,
+)
 from evaluation.metrics import (
     compute_semantic_metrics,
     compute_boundary_f1,
@@ -56,6 +66,30 @@ def parse_args():
     parser.add_argument("--stride", type=int, default=1504)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--boundary-tolerance", type=float, default=2.0)
+    parser.add_argument(
+        "--coco-mask-ap",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also compute COCO mask AP from instance label maps (GT and pred).",
+    )
+    parser.add_argument(
+        "--instance-method",
+        choices=("cc", "watershed"),
+        default="cc",
+        help="How to derive predicted instances for AJI and COCO AP.",
+    )
+    parser.add_argument(
+        "--watershed-min-distance",
+        type=int,
+        default=1,
+        help="peak_local_max min_distance when --instance-method watershed.",
+    )
+    parser.add_argument(
+        "--watershed-boundary-dilate-iter",
+        type=int,
+        default=0,
+        help="Binary dilation iterations on boundary mask for watershed ridge.",
+    )
     args = parser.parse_args()
     _validate_args(args, parser)
     return args
@@ -84,6 +118,10 @@ def _validate_args(
         _raise_argument_error("batch_size must be > 0", parser)
     if not np.isfinite(args.boundary_tolerance) or args.boundary_tolerance < 0:
         _raise_argument_error("boundary_tolerance must be finite and >= 0", parser)
+    if args.watershed_min_distance < 1:
+        _raise_argument_error("watershed_min_distance must be >= 1", parser)
+    if args.watershed_boundary_dilate_iter < 0:
+        _raise_argument_error("watershed_boundary_dilate_iter must be >= 0", parser)
 
 
 def _validate_sample_data(
@@ -116,10 +154,28 @@ def _validate_sample_data(
     return mask_int
 
 
+# Averaged only via aggregate_coco_means when --coco-mask-ap (skips -1 sentinels).
+_COCO_SCALAR_KEYS = frozenset(
+    ("AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100")
+)
+
+
 def _compute_mean_metrics(all_metrics: list[dict[str, float]]) -> dict[str, float]:
     mean_metrics = {}
     for key in all_metrics[0].keys():
-        values = [metrics[key] for metrics in all_metrics if not np.isnan(metrics[key])]
+        if key in _COCO_SCALAR_KEYS:
+            continue
+        values: list[float] = []
+        for metrics in all_metrics:
+            v = metrics.get(key)
+            if v is None or isinstance(v, (list, dict)):
+                continue
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float, np.floating, np.integer)):
+                fv = float(v)
+                if not np.isnan(fv):
+                    values.append(fv)
         mean_metrics[key] = float(np.mean(values)) if values else float("nan")
     return mean_metrics
 
@@ -131,6 +187,19 @@ def _build_results_payload(
     if len(all_metrics) > 1:
         results["mean"] = _compute_mean_metrics(all_metrics)
     return results
+
+
+def _pred_instances_for_metrics(
+    pred_classes: np.ndarray, args: argparse.Namespace
+) -> np.ndarray:
+    """Instance label map for predicted-instance metrics; GT always uses connected components."""
+    if args.instance_method == "cc":
+        return semantic_to_instance_label_map(pred_classes, min_area_px=0)
+    return semantic_to_instance_label_map_watershed(
+        pred_classes,
+        min_distance=args.watershed_min_distance,
+        boundary_dilate_iter=args.watershed_boundary_dilate_iter,
+    )
 
 
 def _print_summary(results: dict[str, dict[str, float]], sample_count: int) -> None:
@@ -175,8 +244,9 @@ def main():
 
     results = {}
     all_metrics = []
+    coco_per_image: list[dict[str, float]] = []
 
-    for sample in samples:
+    for image_idx, sample in enumerate(samples, start=1):
         sample_id = sample["id"]
         print(f"Evaluating sample: {sample_id}")
 
@@ -218,19 +288,52 @@ def main():
 
         # Instance metrics
         true_instances = get_instances(true_mask, interior_class=1)
-        pred_instances = get_instances(pred_classes, interior_class=1)
+        pred_instances = _pred_instances_for_metrics(pred_classes, args)
 
         aji = compute_aji(true_instances, pred_instances)
         metrics["aji"] = aji
 
+        if args.coco_mask_ap:
+            h, w = int(true_mask.shape[0]), int(true_mask.shape[1])
+            gt_for_coco = true_instances
+            pred_for_coco = pred_instances
+            gt_anns = instance_label_map_to_coco_gt(
+                gt_for_coco, image_id=image_idx, height=h, width=w
+            )
+            dt_anns = instance_label_map_to_coco_dt(
+                pred_for_coco, image_id=image_idx, height=h, width=w
+            )
+            coco_summary = evaluate_mask_ap(
+                image_id=image_idx,
+                file_name=f"{sample_id}_eval.png",
+                height=h,
+                width=w,
+                gt_annotations=gt_anns,
+                dt_annotations=dt_anns,
+            )
+            coco_dict = coco_summary.to_dict()
+            metrics.update(coco_dict)
+            coco_per_image.append(coco_dict)
+
         results[sample_id] = metrics
         all_metrics.append(metrics)
 
-        print(
-            f"Metrics for {sample_id}: IoU_Int: {metrics['iou_class_1']:.4f}, IoU_Bnd: {metrics['iou_class_2']:.4f}, Bnd_F1: {bnd_f1:.4f}, AJI: {aji:.4f}"
+        line = (
+            f"Metrics for {sample_id}: IoU_Int: {metrics['iou_class_1']:.4f}, "
+            f"IoU_Bnd: {metrics['iou_class_2']:.4f}, Bnd_F1: {bnd_f1:.4f}, AJI: {aji:.4f}"
         )
+        if args.coco_mask_ap:
+            line += (
+                f", AP: {metrics['AP']:.4f}, AP50: {metrics['AP50']:.4f}, "
+                f"AP75: {metrics['AP75']:.4f}"
+            )
+        print(line)
 
     results = _build_results_payload(results, all_metrics)
+    if args.coco_mask_ap and len(coco_per_image) > 1:
+        if "mean" not in results:
+            results["mean"] = {}
+        results["mean"].update(aggregate_coco_means(coco_per_image))
     _print_summary(results, len(all_metrics))
 
     # Save to JSON
