@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.21.1 (2026-03-21)
+
+### Bug Fixes
+
+- Add missing dependency
+  ([`0f3c47a`](https://github.com/joshbruegger/GrainSegmentation/commit/0f3c47a1ee989b4783e0fbac5218d65fad822f00))
+
+
 ## v0.21.0 (2026-03-20)
 
 ### Bug Fixes
