@@ -5,6 +5,7 @@ description = "Training pipeline for GrainSegmentation"
 requires-python = "==3.12.*"
 dependencies = [
     "matplotlib>=3.10.7",
+    "pycocotools>=2.0.8",
     "keras-tuner>=1.4.8",
     "scipy>=1.17.1",
     "scikit-image>=0.25.0",
