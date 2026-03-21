@@ -24,6 +24,8 @@ BATCH_SIZE=1
 BOUNDARY_TOLERANCE=2.0
 MASK_EXT=".tif"
 MASK_STEM_SUFFIX="_labels"
+# If set, auto-resolve watershed_best_*.json under <root>/<variant_subdir>/ per model stem.
+WATERSHED_TUNE_ROOT=""
 
 function usage {
     echo "Usage: $0 --model-dir <dir> --image-dir <dir> --mask-dir <dir> --output-dir <dir> [options]"
@@ -31,7 +33,7 @@ function usage {
     echo "  --image-dir <dir>         Directory containing evaluation images"
     echo "  --mask-dir <dir>          Directory containing raster masks"
     echo "  --output-dir <dir>        Directory for JSONs, predictions, and plots"
-    echo "  --config-file <path>      Optional TSV: <label><TAB><model><TAB><num_inputs><TAB><suffix_csv>"
+    echo "  --config-file <path>      Optional TSV: label, model, num_inputs, suffix_csv [, watershed_json]"
     echo "  --ppl-image <path>        Optional PPL image to use for overlay generation"
     echo "  --gt-path <path>          Optional mask path to use for overlay generation"
     echo "  --patch-size <int>        Evaluation patch size (default: 1024)"
@@ -40,7 +42,10 @@ function usage {
     echo "  --boundary-tolerance <f>  Boundary tolerance passed to evaluate.py (default: 2.0)"
     echo "  --mask-ext <ext>          Optional mask extension override (default: .tif)"
     echo "  --mask-stem-suffix <s>    Optional suffix before the mask extension (default: '_labels')"
+    echo "  --watershed-tune-root <d> Optional: directory containing per-variant watershed_tune subdirs"
+    echo "                            (e.g. .../runs/watershed_tune). Picks latest watershed_best_*.json."
     echo
+    echo "Config TSV columns: label, model, num_inputs, suffix_csv [, optional_watershed_json_path]"
     echo "If --config-file is omitted, known model naming presets are inferred from filenames."
     exit 1
 }
@@ -135,6 +140,90 @@ function infer_model_config {
     fi
 
     return 1
+}
+
+# Subdir names match SLURM/submit_tune_watershed_variants.sh --output-dir basename.
+function infer_watershed_tune_subdir_from_stem {
+    local model_stem="$1"
+
+    if [[ "$model_stem" == *"PPL+AllPPX"* ]]; then
+        printf '%s\n' "PPL_AllPPX"
+        return 0
+    fi
+    if [[ "$model_stem" == *"PPL+PPXblend"* ]]; then
+        printf '%s\n' "PPL_PlusPPXblend"
+        return 0
+    fi
+    if [[ "$model_stem" == *"PPLPPXblend"* ]]; then
+        printf '%s\n' "PPLPPXblend"
+        return 0
+    fi
+    if [[ "$model_stem" == *"PPL"* ]]; then
+        printf '%s\n' "PPL"
+        return 0
+    fi
+
+    return 1
+}
+
+function pick_latest_watershed_best_json {
+    local dir="$1"
+    shopt -s nullglob
+    local matches=("$dir"/watershed_best_*.json)
+    shopt -u nullglob
+
+    if [ "${#matches[@]}" -eq 0 ]; then
+        echo "No watershed_best_*.json files in: $dir" >&2
+        return 1
+    fi
+
+    local newest=""
+    local newest_mtime=0
+    for f in "${matches[@]}"; do
+        local m
+        m="$(stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f")"
+        if [ "$m" -gt "$newest_mtime" ]; then
+            newest_mtime="$m"
+            newest="$f"
+        fi
+    done
+    printf '%s\n' "$newest"
+}
+
+function resolve_watershed_json_for_model {
+    local model_path="$1"
+    local explicit_json="${2:-}"
+
+    if [ -n "$explicit_json" ]; then
+        if [[ "$explicit_json" = /* ]]; then
+            printf '%s\n' "$explicit_json"
+            return 0
+        fi
+        printf '%s\n' "$MODEL_DIR/$explicit_json"
+        return 0
+    fi
+
+    if [ -z "$WATERSHED_TUNE_ROOT" ]; then
+        printf '\n'
+        return 0
+    fi
+
+    local model_file model_stem subdir variant_dir
+    model_file="$(basename "$model_path")"
+    model_stem="${model_file%.keras}"
+
+    if ! subdir="$(infer_watershed_tune_subdir_from_stem "$model_stem")"; then
+        echo "Cannot infer watershed tune subdir for model stem: $model_stem" >&2
+        return 1
+    fi
+
+    variant_dir="$WATERSHED_TUNE_ROOT/$subdir"
+    if [ ! -d "$variant_dir" ]; then
+        echo "Watershed tune variant directory not found: $variant_dir" >&2
+        return 1
+    fi
+
+    pick_latest_watershed_best_json "$variant_dir"
 }
 
 function find_default_ppl_image {
@@ -244,6 +333,10 @@ while [[ $# -gt 0 ]]; do
             MASK_STEM_SUFFIX="$2"
             shift 2
             ;;
+        --watershed-tune-root)
+            WATERSHED_TUNE_ROOT="$2"
+            shift 2
+            ;;
         --help)
             usage
             ;;
@@ -294,11 +387,12 @@ MODEL_LABELS=()
 MODEL_PATHS=()
 MODEL_NUM_INPUTS=()
 MODEL_SUFFIXES=()
+MODEL_WATERSHED_JSONS=()
 JSON_FILES=()
 PRED_PATHS=()
 
 if [ -n "$CONFIG_FILE" ]; then
-    while IFS=$'\t' read -r label model_ref num_inputs suffix_csv; do
+    while IFS=$'\t' read -r label model_ref num_inputs suffix_csv watershed_json_opt || [ -n "$label" ]; do
         if [ -z "${label// }" ] || [[ "$label" == \#* ]]; then
             continue
         fi
@@ -315,6 +409,7 @@ if [ -n "$CONFIG_FILE" ]; then
         MODEL_PATHS+=("$local_model_path")
         MODEL_NUM_INPUTS+=("$num_inputs")
         MODEL_SUFFIXES+=("$suffix_csv")
+        MODEL_WATERSHED_JSONS+=("${watershed_json_opt:-}")
     done < "$CONFIG_FILE"
 else
     shopt -s nullglob globstar
@@ -337,6 +432,7 @@ else
         MODEL_PATHS+=("$model_path")
         MODEL_NUM_INPUTS+=("$num_inputs")
         MODEL_SUFFIXES+=("$suffix_csv")
+        MODEL_WATERSHED_JSONS+=("")
     done
 fi
 
@@ -344,6 +440,8 @@ if [ "${#MODEL_PATHS[@]}" -eq 0 ]; then
     echo "No models configured for evaluation."
     exit 1
 fi
+
+WATERSHED_JSON_HELPER="$REPO_ROOT/src/evaluation/watershed_json_to_eval_args.py"
 
 echo "Running evaluations..."
 for i in "${!MODEL_PATHS[@]}"; do
@@ -376,6 +474,24 @@ for i in "${!MODEL_PATHS[@]}"; do
 
     if [ -n "$MASK_EXT" ]; then
         eval_cmd+=(--mask-ext "$MASK_EXT")
+    fi
+
+    explicit_ws="${MODEL_WATERSHED_JSONS[$i]:-}"
+    resolved_ws_json=""
+    if resolved_ws_json="$(resolve_watershed_json_for_model "$model_path" "$explicit_ws")"; then
+        :
+    else
+        exit 1
+    fi
+
+    if [ -n "$resolved_ws_json" ]; then
+        require_file "$resolved_ws_json" "Watershed tuning JSON not found"
+        if [ ! -f "$WATERSHED_JSON_HELPER" ]; then
+            echo "Missing helper script: $WATERSHED_JSON_HELPER" >&2
+            exit 1
+        fi
+        mapfile -t _watershed_eval_args < <(python3 "$WATERSHED_JSON_HELPER" "$resolved_ws_json")
+        eval_cmd+=("${_watershed_eval_args[@]}")
     fi
 
     echo "Evaluating ${MODEL_LABELS[$i]} from $model_file"

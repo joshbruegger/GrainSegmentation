@@ -90,6 +90,33 @@ def parse_args():
         default=0,
         help="Binary dilation iterations on boundary mask for watershed ridge.",
     )
+    parser.add_argument(
+        "--watershed-connectivity",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="skimage watershed connectivity (1 or 2) when --instance-method watershed.",
+    )
+    parser.add_argument(
+        "--watershed-min-area-px",
+        type=int,
+        default=0,
+        help="Drop instances smaller than this many pixels (0 disables).",
+    )
+    parser.add_argument(
+        "--watershed-exclude-border",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="peak_local_max exclude_border when --instance-method watershed.",
+    )
+    parser.add_argument(
+        "--watershed-ridge-level",
+        type=float,
+        default=None,
+        help=(
+            "Ridge elevation for boundary; omit for automatic (matches tuning JSON ridge_level null)."
+        ),
+    )
     args = parser.parse_args()
     _validate_args(args, parser)
     return args
@@ -122,6 +149,12 @@ def _validate_args(
         _raise_argument_error("watershed_min_distance must be >= 1", parser)
     if args.watershed_boundary_dilate_iter < 0:
         _raise_argument_error("watershed_boundary_dilate_iter must be >= 0", parser)
+    if args.watershed_min_area_px < 0:
+        _raise_argument_error("watershed_min_area_px must be >= 0", parser)
+    if args.watershed_ridge_level is not None and not np.isfinite(
+        args.watershed_ridge_level
+    ):
+        _raise_argument_error("watershed_ridge_level must be finite when set", parser)
 
 
 def _validate_sample_data(
@@ -199,6 +232,10 @@ def _pred_instances_for_metrics(
         pred_classes,
         min_distance=args.watershed_min_distance,
         boundary_dilate_iter=args.watershed_boundary_dilate_iter,
+        watershed_connectivity=args.watershed_connectivity,
+        min_area_px=args.watershed_min_area_px,
+        exclude_border=args.watershed_exclude_border,
+        ridge_level=args.watershed_ridge_level,
     )
 
 

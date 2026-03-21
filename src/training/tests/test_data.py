@@ -29,20 +29,53 @@ def _write_mask(path: Path, values: np.ndarray) -> None:
     Image.fromarray(values.astype(np.uint8), mode="L").save(path)
 
 
-def _write_float_mask(path: Path, values: np.ndarray) -> None:
-    Image.fromarray(values.astype(np.float32), mode="F").save(path)
+class DatasetValidationHelperTests(unittest.TestCase):
+    """Unit tests for _validate_loaded_sample / _validate_mask_labels (no TensorFlow dataset)."""
 
+    def test_validate_loaded_sample_rejects_mismatched_input_image_shapes(self) -> None:
+        img_a = np.zeros((2, 2, 3), dtype=np.float32)
+        img_b = np.zeros((3, 3, 3), dtype=np.float32)
+        mask = np.zeros((2, 2), dtype=np.int32)
 
-def _consume_first_batch(sample: dict, patch_size: int, stride: int, num_inputs: int):
-    dataset = data.build_dataset(
-        samples=[sample],
-        patch_size=patch_size,
-        stride=stride,
-        batch_size=1,
-        augment=False,
-        num_inputs=num_inputs,
-    )
-    return next(iter(dataset.take(1)))
+        with self.assertRaisesRegex(
+            ValueError, "All input images must share the same shape"
+        ):
+            data._validate_loaded_sample([img_a, img_b], mask, "mask.png")
+
+    def test_validate_loaded_sample_rejects_mask_shape_mismatch(self) -> None:
+        img = np.zeros((2, 2, 3), dtype=np.float32)
+        mask = np.zeros((3, 3), dtype=np.int32)
+
+        with self.assertRaisesRegex(
+            ValueError, "Mask shape .* does not match image shape"
+        ):
+            data._validate_loaded_sample([img], mask, "mask.png")
+
+    def test_validate_mask_labels_rejects_invalid_class_ids(self) -> None:
+        mask = np.array([[0, 1], [2, 3]], dtype=np.uint8)
+
+        with self.assertRaisesRegex(
+            ValueError, r"Mask values must be in \[0, 2\] for mask\.png"
+        ):
+            data._validate_mask_labels(mask, "mask.png")
+
+    def test_validate_mask_labels_rejects_float_mask_values_outside_class_ids(
+        self,
+    ) -> None:
+        mask = np.array([[0.0, 1.2], [2.0, 2.9]], dtype=np.float32)
+
+        with self.assertRaisesRegex(
+            ValueError, r"Mask values must be in \[0, 2\] for mask\.png"
+        ):
+            data._validate_mask_labels(mask, "mask.png")
+
+    def test_validate_mask_labels_rejects_float_mask_not_exactly_integer(self) -> None:
+        mask = np.array([[0.0, 1.0], [2.0, 1.000001]], dtype=np.float32)
+
+        with self.assertRaisesRegex(
+            ValueError, r"Mask values must be in \[0, 2\] for mask\.png"
+        ):
+            data._validate_mask_labels(mask, "mask.png")
 
 
 class BuildDatasetValidationTests(unittest.TestCase):
@@ -90,85 +123,6 @@ class BuildDatasetValidationTests(unittest.TestCase):
                     num_inputs=1,
                 )
 
-    def test_build_dataset_rejects_mismatched_input_image_shapes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            image1_path = tmp_path / "image1.png"
-            image2_path = tmp_path / "image2.png"
-            mask_path = tmp_path / "mask.png"
-            _write_rgb(image1_path, (2, 2))
-            _write_rgb(image2_path, (3, 3))
-            _write_mask(mask_path, np.zeros((2, 2), dtype=np.uint8))
-
-            sample = {
-                "images": [str(image1_path), str(image2_path)],
-                "mask": str(mask_path),
-            }
-
-            with self.assertRaisesRegex(
-                Exception, "All input images must share the same shape"
-            ):
-                _consume_first_batch(sample, patch_size=2, stride=2, num_inputs=2)
-
-    def test_build_dataset_rejects_mask_shape_mismatch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            image_path = tmp_path / "image.png"
-            mask_path = tmp_path / "mask.png"
-            _write_rgb(image_path, (2, 2))
-            _write_mask(mask_path, np.zeros((3, 3), dtype=np.uint8))
-
-            sample = {"images": [str(image_path)], "mask": str(mask_path)}
-
-            with self.assertRaisesRegex(
-                Exception, "Mask shape .* does not match image shape"
-            ):
-                _consume_first_batch(sample, patch_size=2, stride=2, num_inputs=1)
-
-    def test_build_dataset_rejects_invalid_mask_class_ids(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            image_path = tmp_path / "image.png"
-            mask_path = tmp_path / "mask.png"
-            _write_rgb(image_path, (2, 2))
-            _write_mask(mask_path, np.array([[0, 1], [2, 3]], dtype=np.uint8))
-
-            sample = {"images": [str(image_path)], "mask": str(mask_path)}
-
-            with self.assertRaisesRegex(Exception, "Mask values must be in \\[0, 2\\]"):
-                _consume_first_batch(sample, patch_size=2, stride=2, num_inputs=1)
-
-    def test_build_dataset_rejects_float_mask_values_outside_class_ids(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            image_path = tmp_path / "image.png"
-            mask_path = tmp_path / "mask.tiff"
-            _write_rgb(image_path, (2, 2))
-            _write_float_mask(
-                mask_path, np.array([[0.0, 1.2], [2.0, 2.9]], dtype=np.float32)
-            )
-
-            sample = {"images": [str(image_path)], "mask": str(mask_path)}
-
-            with self.assertRaisesRegex(Exception, "Mask values must be in \\[0, 2\\]"):
-                _consume_first_batch(sample, patch_size=2, stride=2, num_inputs=1)
-
-    def test_build_dataset_rejects_near_integer_float_mask_values(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            image_path = tmp_path / "image.png"
-            mask_path = tmp_path / "mask.tiff"
-            _write_rgb(image_path, (2, 2))
-            _write_float_mask(
-                mask_path,
-                np.array([[0.0, 1.0], [2.0, 1.000001]], dtype=np.float32),
-            )
-
-            sample = {"images": [str(image_path)], "mask": str(mask_path)}
-
-            with self.assertRaisesRegex(Exception, "Mask values must be in \\[0, 2\\]"):
-                _consume_first_batch(sample, patch_size=2, stride=2, num_inputs=1)
-
     def test_build_dataset_rejects_num_inputs_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -180,9 +134,16 @@ class BuildDatasetValidationTests(unittest.TestCase):
             sample = {"images": [str(image_path)], "mask": str(mask_path)}
 
             with self.assertRaisesRegex(
-                Exception, "Mismatch between num_inputs and loaded images"
+                ValueError, "Mismatch between num_inputs and loaded images"
             ):
-                _consume_first_batch(sample, patch_size=2, stride=2, num_inputs=2)
+                data.build_dataset(
+                    samples=[sample],
+                    patch_size=2,
+                    stride=2,
+                    batch_size=1,
+                    augment=False,
+                    num_inputs=2,
+                )
 
     def test_build_dataset_rejects_mixed_sample_image_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

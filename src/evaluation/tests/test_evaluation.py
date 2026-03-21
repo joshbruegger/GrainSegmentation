@@ -120,6 +120,10 @@ def _eval_validate_args_ns(**kwargs):
         "instance_method": "cc",
         "watershed_min_distance": 1,
         "watershed_boundary_dilate_iter": 0,
+        "watershed_connectivity": 1,
+        "watershed_min_area_px": 0,
+        "watershed_exclude_border": False,
+        "watershed_ridge_level": None,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -155,6 +159,26 @@ class EvaluateValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError, "boundary_tolerance must be finite and >= 0"
+        ):
+            evaluate._validate_args(args)
+
+    def test_validate_args_rejects_negative_watershed_min_area_px(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        args = _eval_validate_args_ns(watershed_min_area_px=-1)
+
+        with self.assertRaisesRegex(ValueError, "watershed_min_area_px must be >= 0"):
+            evaluate._validate_args(args)
+
+    def test_validate_args_rejects_non_finite_watershed_ridge_level(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        args = _eval_validate_args_ns(watershed_ridge_level=float("nan"))
+
+        with self.assertRaisesRegex(
+            ValueError, "watershed_ridge_level must be finite when set"
         ):
             evaluate._validate_args(args)
 
@@ -636,7 +660,7 @@ class EvaluateMainTests(unittest.TestCase):
                                                     evaluate,
                                                     "semantic_to_instance_label_map_watershed",
                                                     return_value=ws_instances,
-                                                ):
+                                                ) as ws_fn:
                                                     with patch.object(
                                                         evaluate,
                                                         "compute_aji",
@@ -673,6 +697,116 @@ class EvaluateMainTests(unittest.TestCase):
             dt_builder.assert_called_once_with(
                 ws_instances, image_id=1, height=2, width=2
             )
+            ws_fn.assert_called_once()
+            ws_kw = ws_fn.call_args[1]
+            self.assertEqual(ws_kw["min_distance"], 1)
+            self.assertEqual(ws_kw["boundary_dilate_iter"], 0)
+            self.assertEqual(ws_kw["watershed_connectivity"], 1)
+            self.assertEqual(ws_kw["min_area_px"], 0)
+            self.assertFalse(ws_kw["exclude_border"])
+            self.assertIsNone(ws_kw["ridge_level"])
+
+    def test_main_passes_extended_watershed_cli_to_label_map(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        cc_instances = np.array([[0, 1], [0, 1]], dtype=np.int32)
+        ws_instances = np.array([[0, 1], [0, 2]], dtype=np.int32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+                "--instance-method",
+                "watershed",
+                "--watershed-min-distance",
+                "5",
+                "--watershed-boundary-dilate-iter",
+                "1",
+                "--watershed-connectivity",
+                "2",
+                "--watershed-min-area-px",
+                "10",
+                "--watershed-exclude-border",
+                "--watershed-ridge-level",
+                "3.5",
+            ]
+
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate, "list_samples", return_value=[sample]):
+                    with patch.object(
+                        evaluate, "_load_rgb_image", return_value=np.zeros((2, 2, 3))
+                    ):
+                        with patch.object(
+                            evaluate, "_load_raster_mask", return_value=mask
+                        ):
+                            with patch.object(
+                                evaluate,
+                                "predict_full_image",
+                                return_value=(pred, np.zeros((2, 2, 3))),
+                            ):
+                                with patch.object(
+                                    evaluate,
+                                    "compute_semantic_metrics",
+                                    return_value={
+                                        "iou_class_0": 1.0,
+                                        "dice_class_0": 1.0,
+                                        "iou_class_1": 0.75,
+                                        "dice_class_1": 0.86,
+                                        "iou_class_2": 0.5,
+                                        "dice_class_2": 0.67,
+                                    },
+                                ):
+                                    with patch.object(
+                                        evaluate,
+                                        "compute_boundary_f1",
+                                        return_value=0.8,
+                                    ):
+                                        with patch.object(
+                                            evaluate,
+                                            "compute_boundary_iou",
+                                            return_value=0.6,
+                                        ):
+                                            with patch.object(
+                                                evaluate,
+                                                "get_instances",
+                                                return_value=cc_instances,
+                                            ):
+                                                with patch.object(
+                                                    evaluate,
+                                                    "semantic_to_instance_label_map_watershed",
+                                                    return_value=ws_instances,
+                                                ) as ws_fn:
+                                                    with patch.object(
+                                                        evaluate,
+                                                        "compute_aji",
+                                                        return_value=0.7,
+                                                    ):
+                                                        evaluate.main()
+
+            ws_fn.assert_called_once()
+            ws_kw = ws_fn.call_args[1]
+            self.assertEqual(ws_kw["min_distance"], 5)
+            self.assertEqual(ws_kw["boundary_dilate_iter"], 1)
+            self.assertEqual(ws_kw["watershed_connectivity"], 2)
+            self.assertEqual(ws_kw["min_area_px"], 10)
+            self.assertTrue(ws_kw["exclude_border"])
+            self.assertEqual(ws_kw["ridge_level"], 3.5)
 
 
 if __name__ == "__main__":
