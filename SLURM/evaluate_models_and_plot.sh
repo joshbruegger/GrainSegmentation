@@ -21,7 +21,6 @@ GT_PATH=""
 PATCH_SIZE=1024
 STRIDE=512
 BATCH_SIZE=1
-BOUNDARY_TOLERANCE=2.0
 MASK_EXT=".tif"
 MASK_STEM_SUFFIX="_labels"
 # If set, auto-resolve watershed_best_*.json under <root>/<variant_subdir>/ per model stem.
@@ -39,7 +38,6 @@ function usage {
     echo "  --patch-size <int>        Evaluation patch size (default: 1024)"
     echo "  --stride <int>            Evaluation stride (default: 512)"
     echo "  --batch-size <int>        Evaluation batch size (default: 1)"
-    echo "  --boundary-tolerance <f>  Boundary tolerance passed to evaluate.py (default: 2.0)"
     echo "  --mask-ext <ext>          Optional mask extension override (default: .tif)"
     echo "  --mask-stem-suffix <s>    Optional suffix before the mask extension (default: '_labels')"
     echo "  --watershed-tune-root <d> Optional: directory containing per-variant watershed_tune subdirs"
@@ -321,10 +319,6 @@ while [[ $# -gt 0 ]]; do
             BATCH_SIZE="$2"
             shift 2
             ;;
-        --boundary-tolerance)
-            BOUNDARY_TOLERANCE="$2"
-            shift 2
-            ;;
         --mask-ext)
             MASK_EXT="$2"
             shift 2
@@ -468,7 +462,6 @@ for i in "${!MODEL_PATHS[@]}"; do
         --patch-size "$PATCH_SIZE"
         --stride "$STRIDE"
         --batch-size "$BATCH_SIZE"
-        --boundary-tolerance "$BOUNDARY_TOLERANCE"
         --mask-stem-suffix "$MASK_STEM_SUFFIX"
     )
 

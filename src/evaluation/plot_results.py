@@ -119,10 +119,10 @@ def _load_quantitative_metrics(json_files, metrics_to_plot):
 
 def generate_quantitative_plot(json_files, labels, output_path):
     metrics_to_plot = {
-        "Mask IoU (Interior)": "iou_class_1",
-        "Mask IoU (Boundary)": "iou_class_2",
-        "Boundary F1": "boundary_f1",
         "AJI": "aji",
+        "F1 @ IoU 0.5": "f1_iou50",
+        "F1 @ IoU 0.75": "f1_iou75",
+        "mF1 @ IoU 0.5:0.95": "mF1_iou50_95",
     }
 
     means, cis, sample_counts = _load_quantitative_metrics(json_files, metrics_to_plot)

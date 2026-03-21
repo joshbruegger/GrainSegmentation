@@ -1,89 +1,9 @@
 import numpy as np
-from scipy.ndimage import distance_transform_edt
 
 from evaluation.instance_masks import semantic_to_instance_label_map
 
-
-def compute_semantic_metrics(
-    y_true: np.ndarray, y_pred: np.ndarray, num_classes: int = 3
-):
-    """
-    Computes Mask IoU and Dice score for each class.
-    y_true: 2D array of true labels
-    y_pred: 2D array of predicted labels
-    """
-    metrics = {}
-    for c in range(num_classes):
-        true_c = y_true == c
-        pred_c = y_pred == c
-
-        intersection = np.logical_and(true_c, pred_c).sum()
-        union = np.logical_or(true_c, pred_c).sum()
-
-        iou = intersection / union if union > 0 else float("nan")
-
-        sum_mask = true_c.sum() + pred_c.sum()
-        dice = 2 * intersection / sum_mask if sum_mask > 0 else float("nan")
-
-        metrics[f"iou_class_{c}"] = float(iou)
-        metrics[f"dice_class_{c}"] = float(dice)
-
-    return metrics
-
-
-def compute_boundary_f1(
-    y_true: np.ndarray, y_pred: np.ndarray, class_idx: int = 2, tolerance: float = 2.0
-):
-    """
-    Computes Boundary F1 Score for a specific class (default: grain boundary = 2).
-    A predicted boundary pixel is correct if it lies within `tolerance` distance of a true boundary pixel.
-    """
-    true_bnd = y_true == class_idx
-    pred_bnd = y_pred == class_idx
-
-    if true_bnd.sum() == 0 and pred_bnd.sum() == 0:
-        return 1.0
-    if true_bnd.sum() == 0 or pred_bnd.sum() == 0:
-        return 0.0
-
-    dist_to_true = distance_transform_edt(~true_bnd)
-    dist_to_pred = distance_transform_edt(~pred_bnd)
-
-    tp_pred = np.logical_and(pred_bnd, dist_to_true <= tolerance).sum()
-    precision = tp_pred / pred_bnd.sum() if pred_bnd.sum() > 0 else 0.0
-
-    tp_true = np.logical_and(true_bnd, dist_to_pred <= tolerance).sum()
-    recall = tp_true / true_bnd.sum() if true_bnd.sum() > 0 else 0.0
-
-    if precision + recall == 0:
-        return 0.0
-
-    f1 = 2 * precision * recall / (precision + recall)
-    return float(f1)
-
-
-def compute_boundary_iou(
-    y_true: np.ndarray, y_pred: np.ndarray, class_idx: int = 2, tolerance: float = 2.0
-):
-    """
-    Computes Boundary IoU.
-    Dilates the boundaries of the specific class by `tolerance` and computes IoU.
-    """
-    true_bnd = y_true == class_idx
-    pred_bnd = y_pred == class_idx
-
-    if true_bnd.sum() == 0 and pred_bnd.sum() == 0:
-        return 1.0
-    if true_bnd.sum() == 0 or pred_bnd.sum() == 0:
-        return 0.0
-
-    thick_true_bnd = distance_transform_edt(~true_bnd) <= tolerance
-    thick_pred_bnd = distance_transform_edt(~pred_bnd) <= tolerance
-
-    inter = np.logical_and(thick_true_bnd, thick_pred_bnd).sum()
-    union = np.logical_or(thick_true_bnd, thick_pred_bnd).sum()
-
-    return float(inter / union) if union > 0 else 0.0
+# IoU thresholds for mP/mR/mF1@0.5:0.95 (COCO-style sweep).
+IOU_THRESHOLDS_50_95 = tuple(np.arange(0.50, 1.0, 0.05))
 
 
 def get_instances(semantic_mask: np.ndarray, interior_class: int = 1):
@@ -93,6 +13,112 @@ def get_instances(semantic_mask: np.ndarray, interior_class: int = 1):
     return semantic_to_instance_label_map(
         semantic_mask, interior_class=interior_class, connectivity=1, min_area_px=0
     )
+
+
+def _instance_ids(instance_map: np.ndarray) -> list[int]:
+    return sorted(int(x) for x in np.unique(instance_map) if x != 0)
+
+
+def build_instance_iou_matrix(
+    true_instances: np.ndarray, pred_instances: np.ndarray
+) -> tuple[np.ndarray, list[int], list[int]]:
+    """
+    Pairwise IoU between each GT instance and each predicted instance (0 = background).
+    Rows: true_ids, columns: pred_ids.
+    """
+    true_ids = _instance_ids(true_instances)
+    pred_ids = _instance_ids(pred_instances)
+    nt, np_ = len(true_ids), len(pred_ids)
+    mat = np.zeros((nt, np_), dtype=np.float64)
+    for i, tid in enumerate(true_ids):
+        tm = true_instances == tid
+        for j, pid in enumerate(pred_ids):
+            pm = pred_instances == pid
+            inter = np.logical_and(tm, pm).sum()
+            union = np.logical_or(tm, pm).sum()
+            mat[i, j] = float(inter) / float(union) if union > 0 else 0.0
+    return mat, true_ids, pred_ids
+
+
+def greedy_one_to_one_tp_count(iou_matrix: np.ndarray, iou_threshold: float) -> int:
+    """
+    Greedy maximum matching: sort candidate pairs by IoU descending, assign disjoint pairs.
+    Returns the number of matched pairs (TP count).
+    """
+    if iou_matrix.size == 0:
+        return 0
+    nt, np_ = iou_matrix.shape
+    candidates: list[tuple[float, int, int]] = []
+    for i in range(nt):
+        for j in range(np_):
+            v = float(iou_matrix[i, j])
+            if v >= iou_threshold:
+                candidates.append((v, i, j))
+    candidates.sort(key=lambda x: -x[0])
+    used_row: set[int] = set()
+    used_col: set[int] = set()
+    tp = 0
+    for _, i, j in candidates:
+        if i in used_row or j in used_col:
+            continue
+        used_row.add(i)
+        used_col.add(j)
+        tp += 1
+    return tp
+
+
+def compute_instance_precision_recall_f1(
+    true_instances: np.ndarray,
+    pred_instances: np.ndarray,
+    iou_threshold: float,
+) -> tuple[float, float, float]:
+    """
+    One-to-one instance matching at ``iou_threshold``; precision / recall / F1 from TP / FP / FN.
+    """
+    true_ids = _instance_ids(true_instances)
+    pred_ids = _instance_ids(pred_instances)
+    nt, np_ = len(true_ids), len(pred_ids)
+
+    if nt == 0 and np_ == 0:
+        return 1.0, 1.0, 1.0
+    if nt == 0:
+        return 0.0, 0.0, 0.0
+    if np_ == 0:
+        return 0.0, 0.0, 0.0
+
+    iou_matrix, _, _ = build_instance_iou_matrix(true_instances, pred_instances)
+    tp = greedy_one_to_one_tp_count(iou_matrix, iou_threshold)
+    fp = np_ - tp
+    fn = nt - tp
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    if precision + recall == 0:
+        return precision, recall, 0.0
+    f1 = 2.0 * precision * recall / (precision + recall)
+    return float(precision), float(recall), float(f1)
+
+
+def compute_instance_prf_mean_iou_sweep(
+    true_instances: np.ndarray,
+    pred_instances: np.ndarray,
+    thresholds: tuple[float, ...] = IOU_THRESHOLDS_50_95,
+) -> tuple[float, float, float]:
+    """
+    Mean precision, recall, and F1 over ``thresholds`` (default 0.50, 0.55, ..., 0.95).
+    """
+    if not thresholds:
+        return float("nan"), float("nan"), float("nan")
+    ps: list[float] = []
+    rs: list[float] = []
+    fs: list[float] = []
+    for t in thresholds:
+        p, r, f = compute_instance_precision_recall_f1(
+            true_instances, pred_instances, t
+        )
+        ps.append(p)
+        rs.append(r)
+        fs.append(f)
+    return float(np.mean(ps)), float(np.mean(rs)), float(np.mean(fs))
 
 
 def compute_aji(true_instances: np.ndarray, pred_instances: np.ndarray):

@@ -78,6 +78,84 @@ class MetricsTests(unittest.TestCase):
             1.0 / 3.0,
         )
 
+    def test_instance_prf_perfect_match(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        lab = np.array([[1, 1], [1, 0]], dtype=np.int32)
+        p, r, f = metrics.compute_instance_precision_recall_f1(lab, lab, 0.5)
+        self.assertEqual(p, 1.0)
+        self.assertEqual(r, 1.0)
+        self.assertEqual(f, 1.0)
+
+    def test_instance_prf_empty_both(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        empty = np.zeros((4, 4), dtype=np.int32)
+        p, r, f = metrics.compute_instance_precision_recall_f1(empty, empty, 0.5)
+        self.assertEqual(p, 1.0)
+        self.assertEqual(r, 1.0)
+        self.assertEqual(f, 1.0)
+
+    def test_instance_prf_empty_gt_with_predictions_is_all_zero(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        gt = np.zeros((8, 8), dtype=np.int32)
+        pr = np.zeros((8, 8), dtype=np.int32)
+        pr[1:4, 1:4] = 1
+        p, r, f = metrics.compute_instance_precision_recall_f1(gt, pr, 0.5)
+        self.assertEqual(p, 0.0)
+        self.assertEqual(r, 0.0)
+        self.assertEqual(f, 0.0)
+
+    def test_instance_prf_empty_predictions_with_gt_is_all_zero(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        gt = np.zeros((8, 8), dtype=np.int32)
+        gt[1:4, 1:4] = 1
+        pr = np.zeros((8, 8), dtype=np.int32)
+        p, r, f = metrics.compute_instance_precision_recall_f1(gt, pr, 0.5)
+        self.assertEqual(p, 0.0)
+        self.assertEqual(r, 0.0)
+        self.assertEqual(f, 0.0)
+
+    def test_instance_prf_extra_prediction(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        gt = np.zeros((8, 8), dtype=np.int32)
+        gt[1:4, 1:4] = 1
+        pr = np.zeros((8, 8), dtype=np.int32)
+        pr[1:4, 1:4] = 1
+        pr[5:7, 5:7] = 2
+        p, r, f = metrics.compute_instance_precision_recall_f1(gt, pr, 0.5)
+        self.assertAlmostEqual(p, 0.5)
+        self.assertEqual(r, 1.0)
+        self.assertAlmostEqual(f, 2.0 * 0.5 * 1.0 / 1.5)
+
+    def test_instance_prf_missed_ground_truth(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        gt = np.zeros((8, 8), dtype=np.int32)
+        gt[1:4, 1:4] = 1
+        gt[5:7, 5:7] = 2
+        pr = np.zeros((8, 8), dtype=np.int32)
+        pr[1:4, 1:4] = 1
+        p, r, f = metrics.compute_instance_precision_recall_f1(gt, pr, 0.5)
+        self.assertEqual(p, 1.0)
+        self.assertAlmostEqual(r, 0.5)
+        self.assertAlmostEqual(f, 2.0 / 3.0)
+
+    def test_mean_iou_sweep_uses_ten_thresholds(self) -> None:
+        metrics = _reload_module("evaluation.metrics")
+        self.assertEqual(len(metrics.IOU_THRESHOLDS_50_95), 10)
+        self.assertAlmostEqual(metrics.IOU_THRESHOLDS_50_95[0], 0.5)
+        self.assertAlmostEqual(metrics.IOU_THRESHOLDS_50_95[-1], 0.95)
+
+    def test_merge_two_gt_one_pred_no_pair_at_iou50(self) -> None:
+        """Merged prediction can fall below 0.5 IoU with each GT; greedy match yields 0 TP."""
+        metrics = _reload_module("evaluation.metrics")
+        gt = np.zeros((10, 10), dtype=np.int32)
+        gt[1:4, 1:4] = 1
+        gt[6:9, 6:9] = 2
+        pr = np.zeros((10, 10), dtype=np.int32)
+        pr[1:9, 1:9] = 1
+        p50, r50, _ = metrics.compute_instance_precision_recall_f1(gt, pr, 0.5)
+        self.assertEqual(p50, 0.0)
+        self.assertEqual(r50, 0.0)
+
 
 class InferenceTests(unittest.TestCase):
     def test_predict_full_image_uses_training_style_edge_starts(self) -> None:
@@ -115,8 +193,6 @@ def _eval_validate_args_ns(**kwargs):
         "patch_size": 128,
         "stride": 64,
         "batch_size": 1,
-        "boundary_tolerance": 2.0,
-        "coco_mask_ap": False,
         "instance_method": "cc",
         "watershed_min_distance": 1,
         "watershed_boundary_dilate_iter": 0,
@@ -149,17 +225,6 @@ class EvaluateValidationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "num_inputs"):
-            evaluate._validate_args(args)
-
-    def test_validate_args_rejects_non_finite_boundary_tolerance(self) -> None:
-        _install_evaluate_import_stubs()
-        evaluate = _reload_module("evaluation.evaluate")
-
-        args = _eval_validate_args_ns(boundary_tolerance=np.inf)
-
-        with self.assertRaisesRegex(
-            ValueError, "boundary_tolerance must be finite and >= 0"
-        ):
             evaluate._validate_args(args)
 
     def test_validate_args_rejects_negative_watershed_min_area_px(self) -> None:
@@ -269,10 +334,10 @@ class PlotResultsCliTests(unittest.TestCase):
                 json.dumps(
                     {
                         "heldout_section": {
-                            "iou_class_1": 0.61,
-                            "iou_class_2": 0.42,
-                            "boundary_f1": 0.57,
                             "aji": 0.38,
+                            "f1_iou50": 0.41,
+                            "f1_iou75": 0.35,
+                            "mF1_iou50_95": 0.39,
                         }
                     }
                 )
@@ -416,9 +481,24 @@ class EvaluateMainTests(unittest.TestCase):
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
 
+        from evaluation.coco_mask_ap import InstanceAPSummary
+
         sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
         mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
         pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+
+        fake_coco = InstanceAPSummary(
+            0.1,
+            0.2,
+            0.3,
+            -1.0,
+            -1.0,
+            -1.0,
+            0.4,
+            0.5,
+            0.6,
+            None,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_json = Path(tmpdir) / "metrics.json"
@@ -457,42 +537,23 @@ class EvaluateMainTests(unittest.TestCase):
                             ):
                                 with patch.object(
                                     evaluate,
-                                    "compute_semantic_metrics",
-                                    return_value={
-                                        "iou_class_0": 1.0,
-                                        "dice_class_0": 1.0,
-                                        "iou_class_1": 0.75,
-                                        "dice_class_1": 0.86,
-                                        "iou_class_2": 0.5,
-                                        "dice_class_2": 0.67,
-                                    },
+                                    "evaluate_mask_ap",
+                                    return_value=fake_coco,
                                 ):
-                                    with patch.object(
-                                        evaluate,
-                                        "compute_boundary_f1",
-                                        return_value=0.8,
-                                    ):
-                                        with patch.object(
-                                            evaluate,
-                                            "compute_boundary_iou",
-                                            return_value=0.6,
-                                        ):
-                                            with patch.object(
-                                                evaluate,
-                                                "compute_aji",
-                                                return_value=0.7,
-                                            ):
-                                                with contextlib.redirect_stdout(stdout):
-                                                    evaluate.main()
+                                    with contextlib.redirect_stdout(stdout):
+                                        evaluate.main()
 
             saved = json.loads(output_json.read_text())
             self.assertIn("heldout_section", saved)
             self.assertNotIn("mean", saved)
-            self.assertEqual(saved["heldout_section"]["boundary_f1"], 0.8)
+            self.assertEqual(saved["heldout_section"]["AP"], 0.1)
+            self.assertEqual(saved["heldout_section"]["AP50"], 0.2)
+            self.assertEqual(saved["heldout_section"]["f1_iou50"], 1.0)
+            self.assertEqual(saved["heldout_section"]["aji"], 1.0)
             self.assertTrue((pred_dir / "heldout_section_pred.png").exists())
             self.assertIn("descriptive", stdout.getvalue().lower())
 
-    def test_main_coco_mask_ap_adds_coco_fields(self) -> None:
+    def test_main_uses_selected_instance_method_for_aji_and_coco(self) -> None:
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
 
@@ -501,7 +562,8 @@ class EvaluateMainTests(unittest.TestCase):
         sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
         mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
         pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
-
+        cc_instances = np.array([[0, 1], [0, 1]], dtype=np.int32)
+        ws_instances = np.array([[0, 1], [0, 2]], dtype=np.int32)
         fake_coco = InstanceAPSummary(
             0.1,
             0.2,
@@ -531,87 +593,6 @@ class EvaluateMainTests(unittest.TestCase):
                 "1",
                 "--image-suffixes",
                 "_PPL",
-                "--coco-mask-ap",
-            ]
-
-            with patch.object(sys, "argv", argv):
-                with patch.object(evaluate, "list_samples", return_value=[sample]):
-                    with patch.object(
-                        evaluate, "_load_rgb_image", return_value=np.zeros((2, 2, 3))
-                    ):
-                        with patch.object(
-                            evaluate, "_load_raster_mask", return_value=mask
-                        ):
-                            with patch.object(
-                                evaluate,
-                                "predict_full_image",
-                                return_value=(pred, np.zeros((2, 2, 3))),
-                            ):
-                                with patch.object(
-                                    evaluate,
-                                    "compute_semantic_metrics",
-                                    return_value={
-                                        "iou_class_0": 1.0,
-                                        "dice_class_0": 1.0,
-                                        "iou_class_1": 0.75,
-                                        "dice_class_1": 0.86,
-                                        "iou_class_2": 0.5,
-                                        "dice_class_2": 0.67,
-                                    },
-                                ):
-                                    with patch.object(
-                                        evaluate,
-                                        "compute_boundary_f1",
-                                        return_value=0.8,
-                                    ):
-                                        with patch.object(
-                                            evaluate,
-                                            "compute_boundary_iou",
-                                            return_value=0.6,
-                                        ):
-                                            with patch.object(
-                                                evaluate,
-                                                "compute_aji",
-                                                return_value=0.7,
-                                            ):
-                                                with patch.object(
-                                                    evaluate,
-                                                    "evaluate_mask_ap",
-                                                    return_value=fake_coco,
-                                                ):
-                                                    evaluate.main()
-
-            saved = json.loads(output_json.read_text())
-            self.assertEqual(saved["heldout_section"]["AP"], 0.1)
-            self.assertEqual(saved["heldout_section"]["AP50"], 0.2)
-
-    def test_main_uses_selected_instance_method_for_aji_and_coco(self) -> None:
-        _install_evaluate_import_stubs()
-        evaluate = _reload_module("evaluation.evaluate")
-
-        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
-        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
-        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
-        cc_instances = np.array([[0, 1], [0, 1]], dtype=np.int32)
-        ws_instances = np.array([[0, 1], [0, 2]], dtype=np.int32)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_json = Path(tmpdir) / "metrics.json"
-            argv = [
-                "evaluate.py",
-                "--model-path",
-                "model.keras",
-                "--image-dir",
-                "images",
-                "--mask-dir",
-                "masks",
-                "--output-json",
-                str(output_json),
-                "--num-inputs",
-                "1",
-                "--image-suffixes",
-                "_PPL",
-                "--coco-mask-ap",
                 "--instance-method",
                 "watershed",
             ]
@@ -631,67 +612,35 @@ class EvaluateMainTests(unittest.TestCase):
                             ):
                                 with patch.object(
                                     evaluate,
-                                    "compute_semantic_metrics",
-                                    return_value={
-                                        "iou_class_0": 1.0,
-                                        "dice_class_0": 1.0,
-                                        "iou_class_1": 0.75,
-                                        "dice_class_1": 0.86,
-                                        "iou_class_2": 0.5,
-                                        "dice_class_2": 0.67,
-                                    },
+                                    "get_instances",
+                                    return_value=cc_instances,
                                 ):
                                     with patch.object(
                                         evaluate,
-                                        "compute_boundary_f1",
-                                        return_value=0.8,
-                                    ):
+                                        "semantic_to_instance_label_map_watershed",
+                                        return_value=ws_instances,
+                                    ) as ws_fn:
                                         with patch.object(
                                             evaluate,
-                                            "compute_boundary_iou",
-                                            return_value=0.6,
-                                        ):
+                                            "compute_aji",
+                                            return_value=0.7,
+                                        ) as compute_aji:
                                             with patch.object(
                                                 evaluate,
-                                                "get_instances",
-                                                return_value=cc_instances,
+                                                "instance_label_map_to_coco_gt",
+                                                return_value=[],
                                             ):
                                                 with patch.object(
                                                     evaluate,
-                                                    "semantic_to_instance_label_map_watershed",
-                                                    return_value=ws_instances,
-                                                ) as ws_fn:
+                                                    "instance_label_map_to_coco_dt",
+                                                    return_value=[],
+                                                ) as dt_builder:
                                                     with patch.object(
                                                         evaluate,
-                                                        "compute_aji",
-                                                        return_value=0.7,
-                                                    ) as compute_aji:
-                                                        with patch.object(
-                                                            evaluate,
-                                                            "instance_label_map_to_coco_gt",
-                                                            return_value=[],
-                                                        ):
-                                                            with patch.object(
-                                                                evaluate,
-                                                                "instance_label_map_to_coco_dt",
-                                                                return_value=[],
-                                                            ) as dt_builder:
-                                                                with patch.object(
-                                                                    evaluate,
-                                                                    "evaluate_mask_ap",
-                                                                ) as coco_eval:
-                                                                    coco_eval.return_value.to_dict.return_value = {
-                                                                        "AP": 0.1,
-                                                                        "AP50": 0.2,
-                                                                        "AP75": 0.3,
-                                                                        "APs": -1.0,
-                                                                        "APm": -1.0,
-                                                                        "APl": -1.0,
-                                                                        "AR1": 0.4,
-                                                                        "AR10": 0.5,
-                                                                        "AR100": 0.6,
-                                                                    }
-                                                                    evaluate.main()
+                                                        "evaluate_mask_ap",
+                                                        return_value=fake_coco,
+                                                    ):
+                                                        evaluate.main()
 
             compute_aji.assert_called_once_with(cc_instances, ws_instances)
             dt_builder.assert_called_once_with(
@@ -710,11 +659,25 @@ class EvaluateMainTests(unittest.TestCase):
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
 
+        from evaluation.coco_mask_ap import InstanceAPSummary
+
         sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
         mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
         pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
         cc_instances = np.array([[0, 1], [0, 1]], dtype=np.int32)
         ws_instances = np.array([[0, 1], [0, 2]], dtype=np.int32)
+        fake_coco = InstanceAPSummary(
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            0.0,
+            0.0,
+            0.0,
+            None,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_json = Path(tmpdir) / "metrics.json"
@@ -762,42 +725,25 @@ class EvaluateMainTests(unittest.TestCase):
                             ):
                                 with patch.object(
                                     evaluate,
-                                    "compute_semantic_metrics",
-                                    return_value={
-                                        "iou_class_0": 1.0,
-                                        "dice_class_0": 1.0,
-                                        "iou_class_1": 0.75,
-                                        "dice_class_1": 0.86,
-                                        "iou_class_2": 0.5,
-                                        "dice_class_2": 0.67,
-                                    },
+                                    "get_instances",
+                                    return_value=cc_instances,
                                 ):
                                     with patch.object(
                                         evaluate,
-                                        "compute_boundary_f1",
-                                        return_value=0.8,
-                                    ):
+                                        "semantic_to_instance_label_map_watershed",
+                                        return_value=ws_instances,
+                                    ) as ws_fn:
                                         with patch.object(
                                             evaluate,
-                                            "compute_boundary_iou",
-                                            return_value=0.6,
+                                            "evaluate_mask_ap",
+                                            return_value=fake_coco,
                                         ):
                                             with patch.object(
                                                 evaluate,
-                                                "get_instances",
-                                                return_value=cc_instances,
+                                                "compute_aji",
+                                                return_value=0.7,
                                             ):
-                                                with patch.object(
-                                                    evaluate,
-                                                    "semantic_to_instance_label_map_watershed",
-                                                    return_value=ws_instances,
-                                                ) as ws_fn:
-                                                    with patch.object(
-                                                        evaluate,
-                                                        "compute_aji",
-                                                        return_value=0.7,
-                                                    ):
-                                                        evaluate.main()
+                                                evaluate.main()
 
             ws_fn.assert_called_once()
             ws_kw = ws_fn.call_args[1]

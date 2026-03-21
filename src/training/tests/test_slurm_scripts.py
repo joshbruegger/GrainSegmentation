@@ -532,7 +532,7 @@ if [[ "$script" == "../evaluation/evaluate.py" ]]; then
     esac
   done
   mkdir -p "$(dirname "$output_json")" "$pred_dir"
-  printf '{"sample":{"iou_class_1":0.5,"iou_class_2":0.2,"boundary_f1":0.3,"aji":0.4}}' > "$output_json"
+  printf '{"sample":{"aji":0.4,"f1_iou50":0.5,"f1_iou75":0.45,"mF1_iou50_95":0.48,"AP":0.1}}' > "$output_json"
   touch "$pred_dir/MWD-1#121_pred.png"
 fi
 exit 0
@@ -682,7 +682,7 @@ if [[ "$script" == "../evaluation/evaluate.py" ]]; then
     esac
   done
   mkdir -p "$(dirname "$output_json")" "$pred_dir"
-  printf '{"sample":{"iou_class_1":0.5,"iou_class_2":0.2,"boundary_f1":0.3,"aji":0.4}}' > "$output_json"
+  printf '{"sample":{"aji":0.4,"f1_iou50":0.5,"f1_iou75":0.45,"mF1_iou50_95":0.48,"AP":0.1}}' > "$output_json"
   touch "$pred_dir/MWD-1#121_pred.png"
 fi
 exit 0
