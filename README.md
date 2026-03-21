@@ -2,51 +2,134 @@
 
 # GrainSegmentation
 
-**Objective:** Segment grains in sandstone thin-section microscopy comparing three U-net model inputs: PPL-only baseline, PPL + all PPX images, and PPL + screen-blended PPX composite, single PPL+PPX composite.
+**Objective:** Compare instance grain segmentation performance across four microscopy input variants using both U-Net and YOLO segmentation pipelines.
+
+The four input variants are:
+
+- `PPL`
+- `PPL+AllPPX`
+- `PPL+PPXblend`
+- `PPLPPXblend`
+
+For each variant, the project aims to:
+
+1. Tune YOLO hyperparameters.
+2. Tune U-Net hyperparameters.
+3. Train the final YOLO model.
+4. Train the final U-Net model.
+5. Tune watershed postprocessing for the U-Net model.
+6. Compare connected-components and watershed-based instance extraction for U-Net outputs and choose the better postprocessing strategy.
+7. Evaluate YOLO and U-Net instance segmentation on a held-out test image.
+8. Compare results across all models and variants.
 
 ## Dataset
 
-The dataset consists of one partially-labelled high-resolution thin-section divided in 7 aligned images, 1 using Plane-Polarized Light (PPL) and 6 using Cross-Polarized Light (PPX) at different angles.
+The dataset consists of one partially labelled high-resolution sandstone thin-section captured as aligned microscopy images:
 
-Labels were obtained by running SAM2 on the PPL image using a sliding-window approach and then manually perfecting the labels using QGIS. The final hand-labelled masks were then quality checked by fixing invalid geometries, removing holes and fully-contained features and were then smoothed and buffered by 5 pixels. As the resulting labels contained overlaps, a script was developed to produce non-overlapping grain masks by splitting the overlap at its centre so that previously-overlapping polygons touch along it. Polygon masks were then converted into raster masks with the classes background, grain interior, and grain boundary; the grain boundary were computed to be 3-pixel wide.
+- 1 Plane-Polarized Light image (`PPL`)
+- 6 Cross-Polarized Light images (`PPX1` to `PPX6`)
 
-For the PPL + screen-blended PPX model, the 6 PPX images were combined into a single 3-channel composite using screen blending (per-pixel `1 - Π(1 - I_k)` on normalized `[0,1]` channels). The same process, but for all images was used to obtained the PPL_PPX screen-blend composite.
+Labels were obtained by running SAM2 on the PPL image using a sliding-window approach and then manually refining the result in QGIS. The final labels were quality-checked by fixing invalid geometries, removing holes and fully-contained features, smoothing, and finally buffering polygon boundaries by 5px.
 
-### Modeling & Training Pipeline
+Because the manually refined polygons often contained overlaps, especially after smoothing and buffering, an automated preprocessing step (`split_overlaps.py`) was developed to produce strictly non-overlapping grain masks where previously-overlapping polygons touch exactly at a shared boundary.
 
-- **Baseline U-Net:** A consistent U-Net backbone is used across all models for fair comparisons.
-- **Multi-input Data Loader:** Supports flexible input channels (`num_inputs` ∈ {1, 2, 7}) via the wrapper script
-- **Online Random Patches:** Random patch sampling per epoch (e.g., sample N random coordinates per image/region instead of deterministic stride) handles large training images efficiently.
+The algorithm resolves overlaps by:
+1. Identifying connected components of overlapping polygons using a spatial index and bounding-box intersection graph.
+2. For each overlapping pair, computing the exact intersection polygon.
+3. Calculate a topological centerline that splits the overlap in two halves using voronoi polygons (handled by `pygeoops`).
+4. Smoothing the centerline (using Taubin and Chaikin smoothing algorithms) to remove Voronoi-originated zigzags.
+5. Snapping the centerline endpoints exactly to the outer boundaries of the intersecting grains.
+6. Splitting the overlap along this smoothed centerline
+7. Assigning the resulting halves to the original adjacent polygons based on a ray-cast heuristic by building lines from the midpoint of the centerline to the exclusive areas of the polygons. 
 
-### 3. Cross-Validation & Hyperparameter Optimization
+These refined polygons are then rasterized into three semantic classes:
 
-- **Spatial K-fold:** Splits the large training image using grid regions and grain-coverage stratification to ensure similar grain pixels per fold.
-- **Bayesian Optimization Loop:** A training runner evaluates candidate hyperparameter sets (base filters, learning rate, batch size, and dropout rate) across K folds to maximize mean validation metrics.
+- background
+- grain interior
+- grain boundary
 
-### 4. Evaluation
+The grain boundary class is represented as a 3 pixel-wide explicit boundary band so that both semantic and instance-separation quality can be evaluated.
 
-- **Metrics:** Recommended evaluation metrics for this project are:
-    - **Boundary IoU:** Best primary boundary metric for this task because the labels include an explicit thin grain-boundary class and boundary quality is central to downstream grain separation.
-    - **Boundary F1:** Useful companion metric with a pixel tolerance to summarize how often predicted boundaries fall close to the annotated boundaries.
-    - **Interior IoU / Dice:** Still needed to measure overall grain-region overlap, since strong boundary scores alone do not guarantee good interior coverage.
-    - **Aggregated Jaccard Index (AJI):** A good instance-aware metric for microscopy-style segmentation because it penalizes grain merges and splits more directly than semantic overlap metrics.
-    - **Optional diagnostics:** Boundary precision/recall, Adapted Rand error, and Variation of Information can help separate false-split and false-merge failure modes when comparing models.
+Two composite variants are also derived:
 
-    Pixel accuracy should be treated as secondary because the background class can dominate it. Panoptic Quality (PQ) is also lower priority for this project because microscopy literature has shown that IoU-thresholded panoptic metrics can be hard to interpret for small, boundary-sensitive objects.
-- **Final Test:** Models are trained with tuned hyperparameters on the full training image and evaluated once on a single held-out section of the thin-section to measure generalization.
-- **Interpretation:** Because the final test set contains only one independent image, test-set evaluation is descriptive rather than inferential. Formal statistical significance testing is not appropriate at the test-set level in this setup.
-- **Ablations:** Comparisons between PPL-only, PPL+PPX blend, PPL + all-PPX, and PPL + screen-blend highlight practical differences in boundary quality and grain separation on the held-out image, but they should be interpreted as case-study style comparisons rather than dataset-level statistical evidence.
+- `PPLPPXblend`: a single composite input of all images using screen blending
+- `PPL+PPXblend`: a two-input variant using `PPL` plus a screen-blended PPX composite
+
+### Train/Validation Split and Patch Extraction
+
+To process the large high-resolution thin-section image, the training data is spatially split and patchified:
+
+1. **Spatial Tiling:** The image is divided into large 4096×4096 spatial tiles. 
+2. **Coverage Stratification:** To ensure balanced sets, the grain coverage (percentage of grain pixels) is computed for each tile. Tiles with less than 10% coverage are assigned strictly to the training set. The remaining eligible tiles are binned by coverage and split using stratified sampling: 80% to the training set and 20% to the validation set.
+3. **Patch Extraction:** The tiles are then densely cropped into 1024×1024 patches with a 50% overlap. For each time, the corresponding polygon annotation is also saved.
 
 
+## Research Pipeline
+
+### 1. Input Variants
+
+The project compares four input configurations:
+
+- `PPL`: single-input baseline
+- `PPLPPXblend`: single blended composite input
+- `PPL+PPXblend`: two-input PPL + PPX-blend configuration
+- `PPL+AllPPX`: seven-input configuration using PPL and all PPX images
+
+### 2. Model Families
+
+Two segmentation model families are evaluated:
+
+- **U-Net** for semantic segmentation followed by instance extraction
+- **YOLO segmentation** for direct instance segmentation
+
+### 3. U-Net Workflow
+
+For each input variant, the U-Net workflow is:
+
+1. Tune model hyperparameters to achieve best validaton on the training dataset.
+2. Train the final U-Net model using the selected hyperparameters.
+3. Generate semantic predictions on the training dataset.
+4. Convert semantic predictions to instances using:
+
+   - connected components (`CC`)
+   - watershed
+
+5. Tune watershed hyperparameters for each U-Net variant to achieve best aji on training image.
+6. Compare `CC` versus tuned `watershed` on the **training dataset** to decide which postprocessing strategy should be used for final U-Net evaluation.
+7. Evaluate the selected U-Net pipeline on the held-out test image.
+
+### 4. YOLO Workflow
+
+For each input variant, the YOLO workflow is:
+
+1. Tune YOLO hyperparameters to achieve best validaton on the training dataset.
+2. Train the final YOLO segmentation model.
+3. Evaluate instance segmentation performance on the held-out test image.
+
+### 5. Metrics and Comparison
+
+Evaluation metrics include:
+
+- **AJI (Aggregated Jaccard Index):** An instance-aware metric specifically designed for microscopy and cell segmentation. AJI directly penalizes under-segmentation (merged grains) and over-segmentation (split grains) at the pixel level. It provides a holistic view of both detection and boundary adherence without relying on confidence thresholds.
+- **Precision:** The ratio of correctly predicted positive observations to the total predicted positives. It indicates how many of the segmented grains are actually grains.
+- **Recall:** The ratio of correctly predicted positive observations to all observations in actual class. It measures how many of the actual grains were successfully segmented.
+- **F1 Score:** The harmonic mean of Precision and Recall, providing a single metric that balances both false positives and false negatives.
+
+For the YOLO models, **COCO-style mask AP (Average Precision)** was also used. It decouples detection performance from spatial accuracy by averaging across multiple IoU thresholds (AP@0.5:0.95). It allows for the creation of precision-recall curves to understand model confidence. It is generally less sensitive to the topological structure of boundaries (like fused touching instances) than AJI. AP was not calculated for U-net models as they don't produce the required confidence scores for each prediction.
+
+
+## Interpretation Notes
+
+Because the final test set is a single held-out image, final evaluation should be interpreted descriptively rather than inferentially. The held-out result is useful for practical comparison and model selection, but it does not support strong statistical claims about generalization.
 
 ## Paper Structure
 
-- **Introduction & motivation:** Why grain boundary segmentation is useful, previous research using PPL, how the addition of PPX can improve grain boundary segmentation.
-- **Related work:** Thin-section segmentation and multi-modal microscopy fusion.
-- **Dataset & labeling:** Imaging setup, labeling protocol, de-overlap processing, train/val/test split design.
-- **Method:** U-Net architecture, input configurations, screen-blend composite, online patch sampling.
-- **Experiments:** Spatial K-fold protocol, Bayesian hyperparameter search, metrics.
-- **Results:** Quantitative tables/plots + qualitative overlays, reported descriptively for the held-out test image.
-- **Discussion & limitations:** Generalization to new thin-sections, failure modes, and the limitation that a single held-out test image does not support formal statistical comparison.
-- **Conclusion & future work.**
-
+- **Introduction & motivation:** grain segmentation in sandstone thin sections and why multi-modal microscopy may help
+- **Related work:** thin-section segmentation and multi-modal microscopy fusion
+- **Dataset & labeling:** imaging setup, annotation workflow, overlap removal, raster-mask generation
+- **Input variants:** PPL baseline, PPX composites, and multi-input variants
+- **Methods:** U-Net pipeline, YOLO pipeline, and U-Net postprocessing with CC and watershed
+- **Experiments:** per-variant tuning, training, postprocessing selection on the training data, and held-out evaluation
+- **Results:** quantitative comparison across models and variants, plus qualitative overlays
+- **Discussion & limitations:** single-thin-section dataset, descriptive held-out testing, and model failure modes
+- **Conclusion & future work**
