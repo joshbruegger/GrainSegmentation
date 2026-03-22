@@ -147,6 +147,31 @@ def _validate_args(
         _raise_argument_error("watershed_ridge_level must be finite when set", parser)
 
 
+def _prediction_png_path(save_dir: str, sample_id: str) -> str:
+    return os.path.join(save_dir, f"{sample_id}_pred.png")
+
+
+def _load_cached_prediction_png(path: str, expected_hw: tuple[int, int]) -> np.ndarray:
+    """Load a saved class mask PNG; shape must match ``expected_hw`` (H, W)."""
+    with Image.open(path) as img:
+        arr = np.asarray(img)
+    if arr.ndim == 3:
+        if arr.shape[2] == 1:
+            arr = arr[:, :, 0]
+        else:
+            raise ValueError(
+                f"Cached prediction must be single-channel (L mode): {path}"
+            )
+    if arr.ndim != 2:
+        raise ValueError(f"Cached prediction must be 2D: {path}")
+    if arr.shape != expected_hw:
+        raise ValueError(
+            f"Cached prediction shape {arr.shape} does not match image shape "
+            f"{expected_hw}: {path}"
+        )
+    return arr.astype(np.int32)
+
+
 def _validate_sample_data(
     images: list[np.ndarray], mask: np.ndarray, mask_path: str
 ) -> np.ndarray:
@@ -269,11 +294,6 @@ def _print_summary(results: dict[str, dict[str, float]], sample_count: int) -> N
 def main():
     args = parse_args()
 
-    print(f"Loading model from {args.model_path}...")
-    model = tf.keras.models.load_model(
-        args.model_path, custom_objects={"weighted_crossentropy": weighted_crossentropy}
-    )
-
     samples = list_samples(
         image_dir=args.image_dir,
         mask_dir=args.mask_dir,
@@ -292,6 +312,18 @@ def main():
     if args.save_predictions_dir:
         os.makedirs(args.save_predictions_dir, exist_ok=True)
 
+    model: tf.keras.Model | None = None
+
+    def _ensure_model() -> tf.keras.Model:
+        nonlocal model
+        if model is None:
+            print(f"Loading model from {args.model_path}...")
+            model = tf.keras.models.load_model(
+                args.model_path,
+                custom_objects={"weighted_crossentropy": weighted_crossentropy},
+            )
+        return model
+
     results = {}
     all_metrics = []
     coco_per_image: list[dict[str, float]] = []
@@ -308,20 +340,29 @@ def main():
             images, _load_raster_mask(sample["mask"]), sample["mask"]
         )
 
-        # Predict
-        pred_classes, _ = predict_full_image(
-            model=model,
-            inputs=tuple(images),
-            patch_size=args.patch_size,
-            stride=args.stride,
-            batch_size=args.batch_size,
-        )
+        expected_hw = (int(images[0].shape[0]), int(images[0].shape[1]))
+        pred_classes: np.ndarray | None = None
 
         if args.save_predictions_dir:
-            out_img_path = os.path.join(
-                args.save_predictions_dir, f"{sample_id}_pred.png"
+            cache_path = _prediction_png_path(args.save_predictions_dir, sample_id)
+            if os.path.isfile(cache_path):
+                print(f"Reusing cached prediction: {cache_path}")
+                pred_classes = _load_cached_prediction_png(cache_path, expected_hw)
+
+        if pred_classes is None:
+            pred_classes, _ = predict_full_image(
+                model=_ensure_model(),
+                inputs=tuple(images),
+                patch_size=args.patch_size,
+                stride=args.stride,
+                batch_size=args.batch_size,
             )
-            Image.fromarray(pred_classes.astype(np.uint8)).save(out_img_path)
+
+            if args.save_predictions_dir:
+                out_img_path = _prediction_png_path(
+                    args.save_predictions_dir, sample_id
+                )
+                Image.fromarray(pred_classes.astype(np.uint8)).save(out_img_path)
 
         true_instances = get_instances(true_mask, interior_class=1)
         pred_instances = _pred_instances_for_metrics(pred_classes, args)

@@ -553,6 +553,206 @@ class EvaluateMainTests(unittest.TestCase):
             self.assertTrue((pred_dir / "heldout_section_pred.png").exists())
             self.assertIn("descriptive", stdout.getvalue().lower())
 
+    def test_main_reuses_cached_prediction_skips_inference_and_model_load(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        from evaluation.coco_mask_ap import InstanceAPSummary
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+
+        fake_coco = InstanceAPSummary(
+            0.1,
+            0.2,
+            0.3,
+            -1.0,
+            -1.0,
+            -1.0,
+            0.4,
+            0.5,
+            0.6,
+            None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            pred_dir = Path(tmpdir) / "preds"
+            pred_dir.mkdir(parents=True)
+            Image.fromarray(pred.astype(np.uint8)).save(
+                pred_dir / "heldout_section_pred.png"
+            )
+
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--save-predictions-dir",
+                str(pred_dir),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+            ]
+
+            load_model = Mock(return_value=object())
+            predict_full_image = Mock(
+                side_effect=AssertionError("predict_full_image should not be called")
+            )
+
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate.tf.keras.models, "load_model", load_model):
+                    with patch.object(evaluate, "list_samples", return_value=[sample]):
+                        with patch.object(
+                            evaluate,
+                            "_load_rgb_image",
+                            return_value=np.zeros((2, 2, 3)),
+                        ):
+                            with patch.object(
+                                evaluate, "_load_raster_mask", return_value=mask
+                            ):
+                                with patch.object(
+                                    evaluate,
+                                    "predict_full_image",
+                                    predict_full_image,
+                                ):
+                                    with patch.object(
+                                        evaluate,
+                                        "evaluate_mask_ap",
+                                        return_value=fake_coco,
+                                    ):
+                                        evaluate.main()
+
+            load_model.assert_not_called()
+            predict_full_image.assert_not_called()
+            saved = json.loads(output_json.read_text())
+            self.assertEqual(saved["heldout_section"]["aji"], 1.0)
+
+    def test_main_cache_miss_calls_predict_and_loads_model_once(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        from evaluation.coco_mask_ap import InstanceAPSummary
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        pred = np.array([[0, 1], [2, 1]], dtype=np.int32)
+
+        fake_coco = InstanceAPSummary(
+            0.1,
+            0.2,
+            0.3,
+            -1.0,
+            -1.0,
+            -1.0,
+            0.4,
+            0.5,
+            0.6,
+            None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            pred_dir = Path(tmpdir) / "preds"
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--save-predictions-dir",
+                str(pred_dir),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+            ]
+
+            load_model = Mock(return_value=object())
+            predict_full_image = Mock(return_value=(pred, np.zeros((2, 2, 3))))
+
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate.tf.keras.models, "load_model", load_model):
+                    with patch.object(evaluate, "list_samples", return_value=[sample]):
+                        with patch.object(
+                            evaluate,
+                            "_load_rgb_image",
+                            return_value=np.zeros((2, 2, 3)),
+                        ):
+                            with patch.object(
+                                evaluate, "_load_raster_mask", return_value=mask
+                            ):
+                                with patch.object(
+                                    evaluate,
+                                    "predict_full_image",
+                                    predict_full_image,
+                                ):
+                                    with patch.object(
+                                        evaluate,
+                                        "evaluate_mask_ap",
+                                        return_value=fake_coco,
+                                    ):
+                                        evaluate.main()
+
+            load_model.assert_called_once()
+            predict_full_image.assert_called_once()
+
+    def test_main_cached_prediction_raises_on_shape_mismatch(self) -> None:
+        _install_evaluate_import_stubs()
+        evaluate = _reload_module("evaluation.evaluate")
+
+        sample = {"id": "heldout_section", "images": ["img.png"], "mask": "mask.png"}
+        mask = np.array([[0, 1], [2, 1]], dtype=np.int32)
+        wrong_pred = np.zeros((3, 3), dtype=np.uint8)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_json = Path(tmpdir) / "metrics.json"
+            pred_dir = Path(tmpdir) / "preds"
+            pred_dir.mkdir(parents=True)
+            Image.fromarray(wrong_pred).save(pred_dir / "heldout_section_pred.png")
+
+            argv = [
+                "evaluate.py",
+                "--model-path",
+                "model.keras",
+                "--image-dir",
+                "images",
+                "--mask-dir",
+                "masks",
+                "--output-json",
+                str(output_json),
+                "--save-predictions-dir",
+                str(pred_dir),
+                "--num-inputs",
+                "1",
+                "--image-suffixes",
+                "_PPL",
+            ]
+
+            with patch.object(sys, "argv", argv):
+                with patch.object(evaluate, "list_samples", return_value=[sample]):
+                    with patch.object(
+                        evaluate, "_load_rgb_image", return_value=np.zeros((2, 2, 3))
+                    ):
+                        with patch.object(
+                            evaluate, "_load_raster_mask", return_value=mask
+                        ):
+                            with self.assertRaisesRegex(
+                                ValueError, "Cached prediction shape"
+                            ):
+                                evaluate.main()
+
     def test_main_uses_selected_instance_method_for_aji_and_coco(self) -> None:
         _install_evaluate_import_stubs()
         evaluate = _reload_module("evaluation.evaluate")
