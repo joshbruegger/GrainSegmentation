@@ -1,6 +1,36 @@
 # CHANGELOG
 
 
+## v0.22.0 (2026-03-22)
+
+### Bug Fixes
+
+- Add missing slurm script
+  ([`fc42444`](https://github.com/joshbruegger/GrainSegmentation/commit/fc424441b5046ae7eb68a21c60ebc416d3b01fbe))
+
+- Added missing dep (again)
+  ([`87e71e5`](https://github.com/joshbruegger/GrainSegmentation/commit/87e71e54a02e3d56a31615f960c416e7d6fc9358))
+
+### Documentation
+
+- Update readme
+  ([`d8966b2`](https://github.com/joshbruegger/GrainSegmentation/commit/d8966b26ad3736b4b36f7dce53f023906e364ba2))
+
+### Features
+
+- Add caching
+  ([`cbbd4d8`](https://github.com/joshbruegger/GrainSegmentation/commit/cbbd4d8808b05b0251e3b1104def7f0374a8a51a))
+
+- Per-variant watershed eval and training test fixes
+  ([`2a0c7d4`](https://github.com/joshbruegger/GrainSegmentation/commit/2a0c7d4dfa6548a9677ad01e16da8aab89f46ad5))
+
+- **evaluation**: Coco mask AP for U-Net; align AJI instance method
+  ([`1620efc`](https://github.com/joshbruegger/GrainSegmentation/commit/1620efcaa09aab5f89b3744d5f21f36ecaadb9b0))
+
+- **evaluation**: Instance-only metrics and fix PRF empty cases
+  ([`500f22d`](https://github.com/joshbruegger/GrainSegmentation/commit/500f22dd0d4d66015c121a8b1af0f466b6f5f94c))
+
+
 ## v0.21.1 (2026-03-21)
 
 ### Bug Fixes
